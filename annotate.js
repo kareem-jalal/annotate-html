@@ -35,6 +35,7 @@
     toolbarHidden: false,
     rulerDragging: false,
     markerColor: "#C96442",
+    shotDir: null,
   };
 
   var MARKER_COLORS = [
@@ -213,20 +214,185 @@
   }
 
   // ═══════════════════════════════════════════
+  // Screenshots (Chrome extension channel only)
+  // ═══════════════════════════════════════════
+  // The page itself cannot screenshot itself without a dependency, so this
+  // defers to the extension service worker (chrome.tabs.captureVisibleTab) in
+  // the ISOLATED world. Under a plain <script> tag none of this runs and the
+  // output simply has no screenshot lines.
+
+  var SHOT_MAX_WIDTH = 900;   // px, downscaled output cap
+  var SHOT_PADDING = 12;      // px of surrounding context kept around the element
+  var SHOT_QUALITY = 0.82;
+
+  function extensionRuntime() {
+    try {
+      if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id &&
+          typeof chrome.runtime.sendMessage === "function") {
+        return chrome.runtime;
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function sendToExtension(message) {
+    var rt = extensionRuntime();
+    if (!rt) return Promise.resolve(null);
+    return new Promise(function (resolve) {
+      try {
+        rt.sendMessage(message, function (response) {
+          // Reading lastError also silences the "unchecked" console warning.
+          if (chrome.runtime.lastError) { resolve(null); return; }
+          resolve(response || null);
+        });
+      } catch (e) {
+        resolve(null);
+      }
+    });
+  }
+
+  // Capture the visible viewport with the tool's own chrome hidden, so pins,
+  // the hover highlight and the toolbar never end up inside the image.
+  // Two animation frames let the browser apply the hidden overlays and commit
+  // the compositor before capture. A timer fallback matters: rAF is throttled
+  // to nothing in a hidden tab, and overlays must never stay hidden because of
+  // it.
+  function waitForPaint() {
+    return new Promise(function (resolve) {
+      var settled = false;
+      function finish() {
+        if (settled) return;
+        settled = true;
+        resolve();
+      }
+      requestAnimationFrame(function () {
+        requestAnimationFrame(finish);
+      });
+      setTimeout(finish, 150);
+    });
+  }
+
+  function captureViewportShot() {
+    // captureVisibleTab captures whatever tab is visible, so a hidden page has
+    // nothing meaningful to photograph.
+    if (document.visibilityState === "hidden") return Promise.resolve(null);
+
+    var overlays = [hoverHighlight, hoverLabel, markersContainer, toolbar];
+    var hidden = [];
+    overlays.forEach(function (node) {
+      if (node && node.style.visibility !== "hidden") {
+        hidden.push(node);
+        node.style.visibility = "hidden";
+      }
+    });
+    function restore() {
+      hidden.forEach(function (node) { node.style.visibility = ""; });
+    }
+    return waitForPaint()
+      .then(function () { return sendToExtension({ type: "ann-capture" }); })
+      .then(function (response) {
+        restore();
+        return response && response.dataUrl ? response.dataUrl : null;
+      }, function () {
+        restore();
+        return null;
+      });
+  }
+
+  // Crop the viewport shot to the annotated element (plus padding) and shrink
+  // it so the JPEG stays small enough to keep on every annotation.
+  function cropShotToRect(dataUrl, rect) {
+    return new Promise(function (resolve) {
+      var img = new Image();
+      img.onload = function () {
+        // captureVisibleTab returns device pixels; the rect is CSS pixels.
+        var scale = (img.naturalWidth || img.width) / (window.innerWidth || 1);
+        if (!(scale > 0)) { resolve(null); return; }
+        var pad = SHOT_PADDING;
+        var sx = Math.max(0, (rect.x - pad) * scale);
+        var sy = Math.max(0, (rect.y - pad) * scale);
+        var sw = Math.min((img.naturalWidth || img.width) - sx, (rect.width + pad * 2) * scale);
+        var sh = Math.min((img.naturalHeight || img.height) - sy, (rect.height + pad * 2) * scale);
+        if (!(sw > 0 && sh > 0)) { resolve(null); return; }
+        var outW = Math.min(SHOT_MAX_WIDTH, Math.max(1, Math.round(sw)));
+        var outH = Math.max(1, Math.round(sh * (outW / sw)));
+        var canvas = document.createElement("canvas");
+        canvas.width = outW;
+        canvas.height = outH;
+        canvas.getContext("2d").drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
+        try {
+          resolve(canvas.toDataURL("image/jpeg", SHOT_QUALITY));
+        } catch (e) {
+          resolve(null);
+        }
+      };
+      img.onerror = function () { resolve(null); };
+      img.src = dataUrl;
+    });
+  }
+
+  // One folder per page session so a review lands in a single directory.
+  function shotFolder() {
+    if (state.shotDir) return state.shotDir;
+    var host = (window.location.hostname || "page").replace(/[^A-Za-z0-9.-]/g, "").slice(0, 60) || "page";
+    var d = new Date();
+    function pad(n) { return (n < 10 ? "0" : "") + n; }
+    state.shotDir = "annotate-html/" + host.toLowerCase() + "-" +
+      d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "-" +
+      pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+    return state.shotDir;
+  }
+
+  function shotFileName(num) {
+    // Counter-based, not list position: deleting annotations never reuses a
+    // file name, so a folder always maps one file to one annotation.
+    var n = String(num);
+    while (n.length < 2) n = "0" + n;
+    return shotFolder() + "/ann-" + n + ".jpg";
+  }
+
+  // Fire-and-forget capture: annotations must never block on the screenshot.
+  function attachScreenshot(annotation, rect, num) {
+    if (!extensionRuntime()) return;
+    var shot = { name: shotFileName(num), dataUrl: null, path: null };
+    annotation.screenshot = shot;
+
+    annotation._shotPromise = captureViewportShot()
+      .then(function (viewportShot) {
+        if (!viewportShot) return null;
+        return cropShotToRect(viewportShot, rect);
+      })
+      .then(function (cropped) {
+        if (!cropped) { annotation.screenshot = null; return null; }
+        shot.dataUrl = cropped;
+        return sendToExtension({ type: "ann-save-shot", dataUrl: cropped, name: shot.name });
+      })
+      .then(function (saved) {
+        if (saved && saved.filename) shot.path = saved.filename;
+        renderMarkers();
+        return shot.dataUrl ? shot : null;
+      })
+      .catch(function () {
+        annotation.screenshot = null;
+        return null;
+      });
+  }
+
+  // ═══════════════════════════════════════════
   // Output Generation (ported from agentation)
   // ═══════════════════════════════════════════
 
   function generateOutput() {
     if (state.annotations.length === 0) return "";
     var viewport = window.innerWidth + "\u00d7" + window.innerHeight;
-    var pathname = window.location.pathname;
+    var pageUrl = window.location.href;
     var dl = state.detailLevel;
-    var out = "## Page Feedback: " + pathname + "\n";
+    var out = "## Page Feedback: " + pageUrl + "\n";
 
     if (dl === "forensic") {
       out += "\n**Environment:**\n";
       out += "- Viewport: " + viewport + "\n";
-      out += "- URL: " + window.location.href + "\n";
+      out += "- URL: " + pageUrl + "\n";
       out += "- Timestamp: " + new Date().toISOString() + "\n";
       out += "\n---\n";
     } else if (dl !== "compact") {
@@ -235,12 +401,17 @@
     out += "\n";
 
     state.annotations.forEach(function (a, i) {
+      var url = a.url || pageUrl;
+      var shotPath = a.screenshot && a.screenshot.path ? a.screenshot.path : "";
       if (dl === "compact") {
         out += (i + 1) + ". **" + a.element + "**: " + a.comment;
         if (a.selectedText) out += ' (re: "' + a.selectedText.slice(0, 30) + '")';
+        out += " \u2014 " + url;
+        if (shotPath) out += " [shot: " + shotPath + "]";
         out += "\n";
       } else if (dl === "forensic") {
         out += "### " + (i + 1) + ". " + a.element + "\n";
+        out += "**URL:** " + url + "\n";
         if (a.fullPath) out += "**Full DOM Path:** " + a.fullPath + "\n";
         if (a.cssClasses) out += "**CSS Classes:** " + a.cssClasses + "\n";
         if (a.boundingBox) {
@@ -252,9 +423,11 @@
         if (a.nearbyText && !a.selectedText) out += "**Context:** " + a.nearbyText.slice(0, 100) + "\n";
         if (a.computedStyles) out += "**Computed Styles:** " + a.computedStyles + "\n";
         if (a.accessibility) out += "**Accessibility:** " + a.accessibility + "\n";
+        if (shotPath) out += "**Screenshot:** " + shotPath + "\n![" + "annotation " + (i + 1) + "](" + shotPath + ")\n";
         out += "**Feedback:** " + a.comment + "\n\n";
       } else {
         out += "### " + (i + 1) + ". " + a.element + "\n";
+        out += "**URL:** " + url + "\n";
         out += "**Location:** " + a.elementPath + "\n";
         if (dl === "detailed") {
           if (a.cssClasses) out += "**Classes:** " + a.cssClasses + "\n";
@@ -266,6 +439,7 @@
           if (a.nearbyText && !a.selectedText) out += "**Context:** " + a.nearbyText.slice(0, 100) + "\n";
         }
         if (a.selectedText) out += '**Selected text:** "' + a.selectedText + '"\n';
+        if (shotPath) out += "**Screenshot:** " + shotPath + "\n![" + "annotation " + (i + 1) + "](" + shotPath + ")\n";
         out += "**Feedback:** " + a.comment + "\n\n";
       }
     });
@@ -474,6 +648,9 @@
       'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;',
       'display:block;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.ann-marker-tip .ann-tip-comment{color:#1F1E1D;font-size:12px;line-height:1.5}',
+      '.ann-marker-tip .ann-marker-shot{display:block;width:100%;max-height:120px;',
+      'object-fit:cover;object-position:left top;border-radius:6px;',
+      'border:1px solid rgba(31,30,29,.08);margin-bottom:6px}',
 
       // Popup (comment input)
       '#ann-popup{position:fixed;z-index:99998;background:#FAF9F5;',
@@ -496,6 +673,11 @@
       '#ann-popup .ann-popup-label{color:#1F1E1D;font-size:13px;font-weight:400;',
       'font-family:ui-sans-serif,-apple-system,system-ui,sans-serif;',
       'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}',
+
+      // Screenshot thumbnail (captured when the annotation was added)
+      '#ann-popup .ann-popup-shot{display:block;width:100%;max-height:180px;',
+      'object-fit:cover;object-position:left top;border-radius:8px;',
+      'border:1px solid rgba(31,30,29,.08);margin-bottom:10px}',
 
       // Computed styles block (shown when header expanded)
       '#ann-popup .ann-popup-styles{display:none;',
@@ -1445,12 +1627,23 @@
   }
 
   function copyOutput() {
-    var md = generateOutput();
-    if (!md) { showToast("No annotations"); return; }
-    navigator.clipboard.writeText(md).then(function () {
-      flashCopySuccess();
-      showToast("Copied " + state.annotations.length + " annotation(s)");
-    });
+    // A screenshot may still be cropping/saving; wait so the markdown that
+    // lands on the clipboard always carries the image paths.
+    var pending = state.annotations
+      .map(function (a) { return a._shotPromise; })
+      .filter(function (p) { return p && typeof p.then === "function"; });
+
+    function write() {
+      var md = generateOutput();
+      if (!md) { showToast("No annotations"); return; }
+      navigator.clipboard.writeText(md).then(function () {
+        flashCopySuccess();
+        showToast("Copied " + state.annotations.length + " annotation(s)");
+      });
+    }
+
+    if (pending.length === 0) { write(); return; }
+    Promise.all(pending).then(write, write);
   }
 
   function clearAll() {
@@ -1569,6 +1762,7 @@
         comment: comment,
         element: info.name,
         elementPath: info.path,
+        url: window.location.href,
         timestamp: Date.now(),
         selectedText: selectedText || undefined,
         boundingBox: bb,
@@ -1583,6 +1777,13 @@
       updateCount();
       renderMarkers();
       closePopup();
+
+      // Capture after the popup is gone so it can't appear in the image.
+      if (rect) {
+        attachScreenshot(annotation, {
+          x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+        }, state.counter);
+      }
     }}, "Add");
 
     var actions = el("div", { className: "ann-popup-actions" }, [
@@ -1659,6 +1860,13 @@
     ]);
 
     popup.appendChild(hp.header);
+    if (ann.screenshot && ann.screenshot.dataUrl) {
+      popup.appendChild(el("img", {
+        className: "ann-popup-shot",
+        src: ann.screenshot.dataUrl,
+        alt: "Annotation screenshot",
+      }));
+    }
     popup.appendChild(hp.styles);
     popup.appendChild(textarea);
     popup.appendChild(actions);
@@ -1699,8 +1907,18 @@
 
       // Tooltip — sibling of circle so it doesn't scale with it
       var tip = el("div", { className: "ann-marker-tip" });
-      tip.innerHTML = '<span class="ann-tip-element">' + escHtml(a.element) + '</span>' +
+      // Screenshot thumbnail first, so hovering shows what you annotated.
+      if (a.screenshot && a.screenshot.dataUrl) {
+        tip.appendChild(el("img", {
+          className: "ann-marker-shot",
+          src: a.screenshot.dataUrl,
+          alt: "Annotation screenshot",
+        }));
+      }
+      var tipMeta = el("div");
+      tipMeta.innerHTML = '<span class="ann-tip-element">' + escHtml(a.element) + '</span>' +
         '<span class="ann-tip-comment">' + escHtml(a.comment) + '</span>';
+      tip.appendChild(tipMeta);
       marker.appendChild(tip);
 
       // Click to edit
@@ -1876,6 +2094,7 @@
               comment: a.comment || "",
               element: info.name,
               elementPath: info.path,
+              url: a.url || window.location.href,
               timestamp: Date.now(),
               boundingBox: bb,
               nearbyText: getNearbyText(target),
@@ -1883,6 +2102,9 @@
               fullPath: getFullPath(target),
               accessibility: getA11yInfo(target),
               computedStyles: getComputedSnapshot(target),
+              screenshot: a.screenshot
+                ? { name: "", dataUrl: a.screenshot, path: a.screenshotPath || null }
+                : undefined,
             });
           });
           updateCount();

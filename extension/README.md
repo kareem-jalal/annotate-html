@@ -20,9 +20,21 @@ The first injection builds the toolbar. Subsequent invocations on the same tab t
 
 ## How it works
 
-- `manifest.json` declares `activeTab` + `scripting` permissions only — no host permissions, no auto-injection on every page.
+- `manifest.json` declares `activeTab`, `scripting` and `downloads` — no host permissions, no auto-injection on every page.
 - `background.js` listens for `chrome.action.onClicked` and `chrome.commands.onCommand`. Both call `chrome.scripting.executeScript` with `world: "ISOLATED"` to inject `annotate.js` into the active tab.
 - `annotate.js` is a byte-for-byte copy of `../annotate.js` — Chrome rejects manifest paths with `..`, so the file must physically live inside this folder.
+
+## Screenshots
+
+Pressing **Add** makes `annotate.js` ask the service worker for `chrome.tabs.captureVisibleTab`, crop the result to the element on a canvas (12px padding, max 900px wide, JPEG q82), then ask the worker to save it:
+
+```
+~/Downloads/annotate-html/<host>-<YYYYMMDD>-<HHMMSS>/ann-01.jpg
+```
+
+The worker resolves the absolute path with `chrome.downloads.search` and hands it back, so the copied markdown contains a real file path the agent can open. Capture hides the toolbar, pins and hover highlight first, so none of the tool's UI leaks into the image. If capture or the download fails (window minimized, `file://` access off), the annotation is still saved and the `Screenshot:` lines are simply omitted.
+
+`captureVisibleTab` rides on the `activeTab` grant from the icon click or keyboard shortcut, so it only works on the tab you activated, and only until you navigate that tab.
 
 ## Sync with the root file
 
@@ -40,6 +52,7 @@ Chrome blocks content scripts on `chrome://*`, `chrome-extension://*`, the Chrom
 
 ## Known limitations
 
+- **Screenshots need the tab visible**: `captureVisibleTab` fails on minimized or hidden windows, so the annotation gets saved without an image instead.
 - **Shadow DOM**: `document.elementFromPoint` returns the shadow host, not the shadow child. Pre-existing limitation of `annotate.js`.
 - **Iframes**: only the top frame gets the toolbar (`allFrames: false`). Cross-origin iframe annotation isn't supported.
 - **Coexistence with the CDN script tag**: if a page already loads `annotate.js` via `<script>` tag, the page's main-world copy and the extension's isolated-world copy don't see each other — you'll briefly get two toolbars. Don't use the extension on pages that already embed the CDN version.

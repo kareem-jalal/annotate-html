@@ -2,7 +2,7 @@
 
 ## Short description (132 chars max)
 
-Click any element on any page, write feedback, copy structured markdown. Built for AI coding agents like Claude Code and Cursor.
+Click any element, write feedback, copy markdown with element screenshots. Built for AI agents like Claude Code and Cursor.
 
 ## Detailed description
 
@@ -13,7 +13,8 @@ Annotate HTML adds a small toolbar to any page. Toggle annotation mode, click an
 WHAT IT DOES
 
 • Click any element to annotate it — buttons, headings, images, containers, anything\
-• Each annotation captures the selector path, CSS classes, computed styles, bounding box, and accessibility info\
+• Each annotation captures the full page URL, selector path, CSS classes, computed styles, bounding box, and accessibility info\
+• A cropped screenshot of every annotated element, saved to Downloads so your agent can open it\
 • Highlight text before clicking to include the exact selection\
 • Markers drop at your click position with numbered pins — hover to preview, click to edit\
 • One-click copy produces structured markdown your AI agent can act on immediately\
@@ -33,16 +34,22 @@ WHAT GETS CAPTURED
 
 Each annotation records what an AI agent needs to find and fix the right element:
 
+• Full URL — origin, path, query and hash, captured when you clicked\
 • Element name — button "Download", h2 "Features", image "hero.png"\
+• A cropped screenshot of the element, saved locally as a JPEG\
 • Selector path — .hero > .cta > .btn-primary\
 • CSS classes, bounding box, computed styles\
 • Selected text (if highlighted)\
 • Nearby text context from sibling elements\
 • Accessibility info — role, aria-label, focusable
 
+SCREENSHOTS
+
+Pressing Add captures the visible tab, crops it to the element, and writes a JPEG to Downloads/annotate-html/<site>-<date>-<time>/. The copied markdown carries the absolute path, so an agent can open the image directly. Images never leave your machine.
+
 PRIVACY
 
-Zero data collection. No analytics, no tracking, no network requests. Everything stays in your browser tab and disappears when you close it. Minimal permissions: activeTab and scripting only.
+Zero data collection. No analytics, no tracking, no network requests. Everything stays in your browser tab and disappears when you close it. Permissions: activeTab and scripting to inject on demand, downloads to save the screenshots locally.
 
 OPEN SOURCE
 
