@@ -199,6 +199,35 @@
     return parts.join(" > ");
   }
 
+  // Absolute XPath with 1-based sibling indexes: /html/body/div[2]/table/tbody/
+  // tr[3]/td[5]/span. Indexes make it unambiguous even for repeated rows/cells,
+  // which is exactly where CSS-ish paths go vague. document.evaluate can verify
+  // it resolves to this exact element; when it does not (shadow DOM, renamed
+  // nodes between capture and copy) we still emit the best-effort path.
+  function getXPath(el) {
+    var parts = [];
+    var cur = el;
+    while (cur && cur.nodeType === 1) {
+      var tag = cur.tagName.toLowerCase();
+      var index = 1;
+      var sib = cur.previousElementSibling;
+      while (sib) {
+        if (sib.tagName && sib.tagName.toLowerCase() === tag) index++;
+        sib = sib.previousElementSibling;
+      }
+      var total = 1;
+      sib = cur.nextElementSibling;
+      while (sib) {
+        if (sib.tagName && sib.tagName.toLowerCase() === tag) total++;
+        sib = sib.nextElementSibling;
+      }
+      parts.unshift(index === 1 && total === 1 ? tag : tag + "[" + index + "]");
+      if (tag === "html") break;
+      cur = cur.parentElement;
+    }
+    return "/" + parts.join("/");
+  }
+
   function getA11yInfo(el) {
     var parts = [];
     var role = el.getAttribute("role");
@@ -221,8 +250,8 @@
   // the ISOLATED world. Under a plain <script> tag none of this runs and the
   // output simply has no screenshot lines.
 
-  var SHOT_MAX_WIDTH = 900;   // px, downscaled output cap
-  var SHOT_PADDING = 12;      // px of surrounding context kept around the element
+  var SHOT_MAX_WIDTH = 1280;  // px, downscaled full-viewport output cap
+  var SHOT_PAD = 4;           // px of breathing room around the highlight box
   var SHOT_QUALITY = 0.82;
 
   function extensionRuntime() {
@@ -299,27 +328,38 @@
       });
   }
 
-  // Crop the viewport shot to the annotated element (plus padding) and shrink
-  // it so the JPEG stays small enough to keep on every annotation.
-  function cropShotToRect(dataUrl, rect) {
+  // Keep the WHOLE viewport in the shot and paint a red highlight box around
+  // the annotated element: a crop of a 45x15px cell is useless context, while
+  // the full page with the target boxed tells the agent where it lives. The
+  // box is drawn on canvas after capture, so it never depends on overlay paint
+  // timing and the tool's own chrome stays out of the image.
+  function fullShotWithHighlight(dataUrl, rect) {
     return new Promise(function (resolve) {
       var img = new Image();
       img.onload = function () {
-        // captureVisibleTab returns device pixels; the rect is CSS pixels.
-        var scale = (img.naturalWidth || img.width) / (window.innerWidth || 1);
-        if (!(scale > 0)) { resolve(null); return; }
-        var pad = SHOT_PADDING;
-        var sx = Math.max(0, (rect.x - pad) * scale);
-        var sy = Math.max(0, (rect.y - pad) * scale);
-        var sw = Math.min((img.naturalWidth || img.width) - sx, (rect.width + pad * 2) * scale);
-        var sh = Math.min((img.naturalHeight || img.height) - sy, (rect.height + pad * 2) * scale);
-        if (!(sw > 0 && sh > 0)) { resolve(null); return; }
-        var outW = Math.min(SHOT_MAX_WIDTH, Math.max(1, Math.round(sw)));
-        var outH = Math.max(1, Math.round(sh * (outW / sw)));
+        var srcW = img.naturalWidth || img.width;
+        var srcH = img.naturalHeight || img.height;
+        if (!(srcW > 0 && srcH > 0)) { resolve(null); return; }
+        var outW = Math.min(SHOT_MAX_WIDTH, srcW);
+        var outH = Math.max(1, Math.round(srcH * (outW / srcW)));
         var canvas = document.createElement("canvas");
         canvas.width = outW;
         canvas.height = outH;
-        canvas.getContext("2d").drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
+        var ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, srcW, srcH, 0, 0, outW, outH);
+        // captureVisibleTab returns device pixels and the rect is CSS pixels;
+        // mapping through the output width handles devicePixelRatio for free.
+        var k = outW / (window.innerWidth || srcW);
+        var pad = SHOT_PAD * k;
+        var x = Math.max(0, rect.x * k - pad);
+        var y = Math.max(0, rect.y * k - pad);
+        var w = Math.min(outW - x, rect.width * k + pad * 2);
+        var h = Math.min(outH - y, rect.height * k + pad * 2);
+        if (w > 0 && h > 0) {
+          ctx.strokeStyle = "#FF2D2D";
+          ctx.lineWidth = Math.max(2, Math.round(2 * k));
+          ctx.strokeRect(x, y, w, h);
+        }
         try {
           resolve(canvas.toDataURL("image/jpeg", SHOT_QUALITY));
         } catch (e) {
@@ -360,12 +400,12 @@
     annotation._shotPromise = captureViewportShot()
       .then(function (viewportShot) {
         if (!viewportShot) return null;
-        return cropShotToRect(viewportShot, rect);
+        return fullShotWithHighlight(viewportShot, rect);
       })
-      .then(function (cropped) {
-        if (!cropped) { annotation.screenshot = null; return null; }
-        shot.dataUrl = cropped;
-        return sendToExtension({ type: "ann-save-shot", dataUrl: cropped, name: shot.name });
+      .then(function (shotDataUrl) {
+        if (!shotDataUrl) { annotation.screenshot = null; return null; }
+        shot.dataUrl = shotDataUrl;
+        return sendToExtension({ type: "ann-save-shot", dataUrl: shotDataUrl, name: shot.name });
       })
       .then(function (saved) {
         if (saved && saved.filename) shot.path = saved.filename;
@@ -413,6 +453,7 @@
         out += "### " + (i + 1) + ". " + a.element + "\n";
         out += "**URL:** " + url + "\n";
         if (a.fullPath) out += "**Full DOM Path:** " + a.fullPath + "\n";
+        if (a.xpath) out += "**XPath:** " + a.xpath + "\n";
         if (a.cssClasses) out += "**CSS Classes:** " + a.cssClasses + "\n";
         if (a.boundingBox) {
           var bb = a.boundingBox;
@@ -423,12 +464,15 @@
         if (a.nearbyText && !a.selectedText) out += "**Context:** " + a.nearbyText.slice(0, 100) + "\n";
         if (a.computedStyles) out += "**Computed Styles:** " + a.computedStyles + "\n";
         if (a.accessibility) out += "**Accessibility:** " + a.accessibility + "\n";
-        if (shotPath) out += "**Screenshot:** " + shotPath + "\n![" + "annotation " + (i + 1) + "](" + shotPath + ")\n";
+        var imgRef = a.screenshot && a.screenshot.dataUrl ? a.screenshot.dataUrl : shotPath;
+        if (shotPath) out += "**Screenshot:** " + shotPath + "\n";
+        if (imgRef) out += "![" + "annotation " + (i + 1) + "](" + imgRef + ")\n";
         out += "**Feedback:** " + a.comment + "\n\n";
       } else {
         out += "### " + (i + 1) + ". " + a.element + "\n";
         out += "**URL:** " + url + "\n";
         out += "**Location:** " + a.elementPath + "\n";
+        if (a.xpath) out += "**XPath:** " + a.xpath + "\n";
         if (dl === "detailed") {
           if (a.cssClasses) out += "**Classes:** " + a.cssClasses + "\n";
           if (a.boundingBox) {
@@ -439,7 +483,9 @@
           if (a.nearbyText && !a.selectedText) out += "**Context:** " + a.nearbyText.slice(0, 100) + "\n";
         }
         if (a.selectedText) out += '**Selected text:** "' + a.selectedText + '"\n';
-        if (shotPath) out += "**Screenshot:** " + shotPath + "\n![" + "annotation " + (i + 1) + "](" + shotPath + ")\n";
+        var imgRef = a.screenshot && a.screenshot.dataUrl ? a.screenshot.dataUrl : shotPath;
+        if (shotPath) out += "**Screenshot:** " + shotPath + "\n";
+        if (imgRef) out += "![" + "annotation " + (i + 1) + "](" + imgRef + ")\n";
         out += "**Feedback:** " + a.comment + "\n\n";
       }
     });
@@ -1769,6 +1815,7 @@
         nearbyText: getNearbyText(info.target),
         cssClasses: getClasses(info.target),
         fullPath: getFullPath(info.target),
+        xpath: getXPath(info.target),
         accessibility: getA11yInfo(info.target),
         computedStyles: getComputedSnapshot(info.target),
       };
@@ -2100,6 +2147,7 @@
               nearbyText: getNearbyText(target),
               cssClasses: getClasses(target),
               fullPath: getFullPath(target),
+              xpath: getXPath(target),
               accessibility: getA11yInfo(target),
               computedStyles: getComputedSnapshot(target),
               screenshot: a.screenshot
