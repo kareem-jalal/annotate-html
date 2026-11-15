@@ -25,7 +25,7 @@ Both channels run the same `annotate.js`. The Chrome extension additionally scre
 1. A toolbar appears bottom-right. Click **Annotate** or press `Alt+A` — an asterisk cursor appears
 2. Hover any element to see its selector and highlight. Click to open a popup with computed styles and a feedback field
 3. Markers drop at your click position. Hover to preview, click to edit
-4. Press `C` to copy all feedback as structured markdown. Paste into Claude Code, Cursor, or any AI coding tool
+4. Press `C` to copy all feedback as structured YAML. Paste into Claude Code, Cursor, or any AI coding tool
 
 The toolbar collapses to a round button when closed. Rulers along the top and left edges let you drag out guide lines for alignment.
 
@@ -34,7 +34,7 @@ The toolbar collapses to a round button when closed. Rulers along the top and le
 | Key | What it does |
 |---|---|
 | `Alt+A` | Toggle annotation mode |
-| `C` | Copy markdown |
+| `C` | Copy YAML |
 | `M` | Marker color picker |
 | `H` | Show/hide markers, rulers, guides |
 | `Cmd/Ctrl+Enter` | Submit annotation |
@@ -55,41 +55,66 @@ Each annotation records what an AI agent needs to find and fix the right code:
 - **Selected text** (if you highlight before clicking)
 - **Nearby text context** from sibling elements
 - **Accessibility info** — role, aria-label, focusable
-- **A full-viewport screenshot** with a red highlight box around the element, in the Chrome extension only — copied as markdown it embeds the image inline as base64, so pasting to an agent needs no screenshot folder
+- **A full-viewport screenshot** with a red highlight box around the element, in the Chrome extension only — the copied YAML carries the image as base64 in a bottom `images:` block, so pasting to an agent needs no screenshot folder
 
 ### Example output
 
-```markdown
-## Page Feedback: https://example.com/index.html?v=2#pricing
-**Viewport:** 1440×900
+The clipboard payload is YAML with an agent-facing header comment: metadata first, image blobs only at the very bottom, so an agent can read the whole packet cheaply and skip the base64 unless it actually needs the pixels.
 
-### 1. button "Download for macOS"
-**URL:** https://example.com/index.html?v=2#pricing
-**Location:** .hero > .wrap > .hero-actions > .btn-primary
-**XPath:** /html/body/div[1]/section[2]/div/div[3]/button[1]
-**Classes:** btn-primary
-**Position:** 420px, 380px (180×48px)
-**Screenshot:** /home/you/Downloads/annotate-html/example.com-20261020-153012/ann-01.jpg
-![annotation 1](data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ...)
-**Feedback:** Make the border-radius softer, more like 100px pill shape
+```yaml
+# annotate-html page feedback - a structured annotation packet for AI agents.
+# Each entry under `annotations:` is one element-level note from a human reviewer:
+# `feedback` says what to change, `xpath`/`location` say exactly where.
+# Reading this cheaply: all metadata is above; the ONLY bulk is the `images:`
+# block at the very bottom. To skip the base64, read up to the line starting
+# with `images:` and ignore everything after it.
+# Screenshots are full-viewport JPEGs with the annotated element outlined in red.
+# Prefer `screenshot.path` when present - the same JPEG is already on disk.
+# To decode an inline image (id N) to a viewable file:
+#   awk -v id=N '$0=="images:"{p=1;next} p&&$1==id":"{sub(/^[^,]*,/,"");print;exit}' FILE | base64 -d > shot-N.jpg
+# or in Python: after splitting the text on the line `images:`, take the line
+#   starting `N: `, cut everything up to the first comma, base64-decode the rest.
+#
+schema: annotate-html/v1
+generated: "2026-11-15T02:04:11.221Z"
+page:
+  url: "https://example.com/index.html?v=2#pricing"
+  title: "Example — Pricing"
+  viewport: "1440x900"
+annotation_count: 2
+annotations:
+  - id: 1
+    element: "button \"Download for macOS\""
+    url: "https://example.com/index.html?v=2#pricing"
+    location: ".hero > .wrap > .hero-actions > .btn-primary"
+    xpath: "/html/body/div[1]/section[2]/div/div[3]/button[1]"
+    css_classes: "btn-primary"
+    position: {x: 420, y: 380, width: 180, height: 48}
+    feedback: "Make the border-radius softer, more like 100px pill shape"
+    screenshot:
+      path: "/home/you/Downloads/annotate-html/example.com-20261020-153012/ann-01.jpg"
+      kb: 24
+  - id: 2
+    element: "h2 \"Built with Swift.\""
+    url: "https://example.com/index.html?v=2#pricing"
+    location: ".native-section > .wrap > .vis"
+    feedback: "Font weight feels too heavy here, try 600 instead of 700"
 
-### 2. h2 "Built with Swift."
-**URL:** https://example.com/index.html?v=2#pricing
-**Location:** .native-section > .wrap > .vis
-**Feedback:** Font weight feels too heavy here, try 600 instead of 700
+images:
+  1: data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ...
 ```
 
 ## Screenshots
 
-The Chrome extension screenshots the page the moment you press **Add**, crops it to the element (12px of surrounding context), and writes a JPEG to:
+The Chrome extension screenshots the page the moment you press **Add** — full viewport, downscaled to 1280px wide, with the element outlined in red on the image — and writes a JPEG to:
 
 ```
 ~/Downloads/annotate-html/<host>-<YYYYMMDD>-<HHMMSS>/ann-01.jpg
 ```
 
-One folder per page session, one file per annotation. The copied markdown embeds the image itself as a `data:image/jpeg;base64,...` URI — the whole page with the red box — so a single paste into an agent is self-contained; the `Screenshot:` path line stays for opening the saved file directly. The full viewport is kept (downscaled to 1280px wide) and the element is outlined in red on the image itself, so tiny elements still come with their surroundings. Screenshot capture pauses the tool's own overlays and pins first, so they never appear in the image, and a failed capture just drops the lines — the annotation still records everything else.
+One folder per page session, one file per annotation. The copied YAML carries the image itself as a `data:image/jpeg;base64,...` value in the bottom `images:` block — so a single paste into an agent is self-contained — while `screenshot.path` + `kb` up top let an agent use the saved file (or skip the pixels entirely) without decoding anything. The full viewport is kept so tiny elements still come with their surroundings. Screenshot capture pauses the tool's own overlays and pins first, so they never appear in the image, and a failed capture just drops the image keys — the annotation still records everything else.
 
-The `<script>` tag channel cannot take screenshots (a page can't capture itself without a dependency), so it skips this and its output has no `Screenshot:` lines. The full URL, which needs no special access, is captured in both channels.
+The `<script>` tag channel cannot take screenshots (a page can't capture itself without a dependency), so it skips this and its output has no `screenshot:` keys. The full URL, which needs no special access, is captured in both channels.
 
 
 ## License

@@ -422,75 +422,101 @@
   // Output Generation (ported from agentation)
   // ═══════════════════════════════════════════
 
+  // YAML scalar escaping: always double-quote, JSON-style escapes (valid YAML).
+  function yamlStr(v) {
+    var s = (v === null || typeof v === "undefined") ? "" : String(v);
+    var q = "\"";
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charAt(i);
+      if (c === "\\") q += "\\\\";
+      else if (c === "\"") q += "\\\"";
+      else if (c === "\n") q += "\\n";
+      else if (c === "\r") q += "\\r";
+      else if (c === "\t") q += "\\t";
+      else q += c;
+    }
+    return q + "\"";
+  }
+
   function generateOutput() {
     if (state.annotations.length === 0) return "";
-    var viewport = window.innerWidth + "\u00d7" + window.innerHeight;
-    var pageUrl = window.location.href;
     var dl = state.detailLevel;
-    var out = "## Page Feedback: " + pageUrl + "\n";
+    var pageUrl = window.location.href;
+    var L = [];
 
-    if (dl === "forensic") {
-      out += "\n**Environment:**\n";
-      out += "- Viewport: " + viewport + "\n";
-      out += "- URL: " + pageUrl + "\n";
-      out += "- Timestamp: " + new Date().toISOString() + "\n";
-      out += "\n---\n";
-    } else if (dl !== "compact") {
-      out += "**Viewport:** " + viewport + "\n";
-    }
-    out += "\n";
+    // Agent-facing header: what this is, how to read it cheaply, how to decode images.
+    L.push("# annotate-html page feedback - a structured annotation packet for AI agents.");
+    L.push("# Each entry under `annotations:` is one element-level note from a human reviewer:");
+    L.push("# `feedback` says what to change, `xpath`/`location` say exactly where.");
+    L.push("# Reading this cheaply: all metadata is above; the ONLY bulk is the `images:`");
+    L.push("# block at the very bottom. To skip the base64, read up to the line starting");
+    L.push("# with `images:` and ignore everything after it.");
+    L.push("# Screenshots are full-viewport JPEGs with the annotated element outlined in red.");
+    L.push("# Prefer `screenshot.path` when present - the same JPEG is already on disk.");
+    L.push("# To decode an inline image (id N) to a viewable file:");
+    L.push("#   awk -v id=N '$0==\"images:\"{p=1;next} p&&$1==id\":\"{sub(/^[^,]*,/,\"\");print;exit}' FILE | base64 -d > shot-N.jpg");
+    L.push("# or in Python: after splitting the text on the line `images:`, take the line");
+    L.push("#   starting `N: `, cut everything up to the first comma, base64-decode the rest.");
+    L.push("#");
+    L.push("schema: annotate-html/v1");
+    L.push("generated: " + yamlStr(new Date().toISOString()));
+    L.push("page:");
+    L.push("  url: " + yamlStr(pageUrl));
+    if (document.title) L.push("  title: " + yamlStr(document.title));
+    L.push("  viewport: " + JSON.stringify(window.innerWidth + "x" + window.innerHeight));
+    L.push("annotation_count: " + state.annotations.length);
+    L.push("annotations:");
 
+    var images = [];
     state.annotations.forEach(function (a, i) {
       var url = a.url || pageUrl;
       var shotPath = a.screenshot && a.screenshot.path ? a.screenshot.path : "";
-      if (dl === "compact") {
-        out += (i + 1) + ". **" + a.element + "**: " + a.comment;
-        if (a.selectedText) out += ' (re: "' + a.selectedText.slice(0, 30) + '")';
-        out += " \u2014 " + url;
-        if (shotPath) out += " [shot: " + shotPath + "]";
-        out += "\n";
-      } else if (dl === "forensic") {
-        out += "### " + (i + 1) + ". " + a.element + "\n";
-        out += "**URL:** " + url + "\n";
-        if (a.fullPath) out += "**Full DOM Path:** " + a.fullPath + "\n";
-        if (a.xpath) out += "**XPath:** " + a.xpath + "\n";
-        if (a.cssClasses) out += "**CSS Classes:** " + a.cssClasses + "\n";
-        if (a.boundingBox) {
-          var bb = a.boundingBox;
-          out += "**Position:** x:" + Math.round(bb.x) + ", y:" + Math.round(bb.y) +
-            " (" + Math.round(bb.width) + "\u00d7" + Math.round(bb.height) + "px)\n";
+      var dataUrl = a.screenshot && a.screenshot.dataUrl ? a.screenshot.dataUrl : "";
+      L.push("  - id: " + (i + 1));
+      L.push("    element: " + yamlStr(a.element));
+      if (dl !== "compact") L.push("    url: " + yamlStr(url));
+      if (dl !== "compact") {
+        L.push("    location: " + yamlStr(a.elementPath));
+        if (a.xpath) L.push("    xpath: " + yamlStr(a.xpath));
+      }
+      if (dl === "forensic") {
+        if (a.fullPath) L.push("    full_dom_path: " + yamlStr(a.fullPath));
+        if (a.cssClasses) L.push("    css_classes: " + yamlStr(a.cssClasses));
+      } else if (dl === "detailed" && a.cssClasses) {
+        L.push("    css_classes: " + yamlStr(a.cssClasses));
+      }
+      if (a.boundingBox && dl !== "compact") {
+        var b = a.boundingBox;
+        L.push("    position: {x: " + Math.round(b.x) + ", y: " + Math.round(b.y) +
+               ", width: " + Math.round(b.width) + ", height: " + Math.round(b.height) + "}");
+      }
+      if (a.selectedText) L.push("    selected_text: " + yamlStr(a.selectedText));
+      if (a.nearbyText && !a.selectedText && dl !== "compact") {
+        L.push("    context: " + yamlStr(a.nearbyText.slice(0, 100)));
+      }
+      if (dl === "forensic") {
+        if (a.computedStyles) L.push("    computed_styles: " + yamlStr(a.computedStyles));
+        if (a.accessibility) L.push("    accessibility: " + yamlStr(a.accessibility));
+      }
+      L.push("    feedback: " + yamlStr(a.comment));
+      if (shotPath || dataUrl) {
+        L.push("    screenshot:");
+        if (shotPath) L.push("      path: " + yamlStr(shotPath));
+        if (dataUrl) {
+          var kb = Math.round((dataUrl.length - dataUrl.indexOf(",") - 1) * 3 / 4 / 1024);
+          L.push("      kb: " + kb);
+          images.push("  " + (i + 1) + ": " + dataUrl);
         }
-        if (a.selectedText) out += '**Selected text:** "' + a.selectedText + '"\n';
-        if (a.nearbyText && !a.selectedText) out += "**Context:** " + a.nearbyText.slice(0, 100) + "\n";
-        if (a.computedStyles) out += "**Computed Styles:** " + a.computedStyles + "\n";
-        if (a.accessibility) out += "**Accessibility:** " + a.accessibility + "\n";
-        var imgRef = a.screenshot && a.screenshot.dataUrl ? a.screenshot.dataUrl : shotPath;
-        if (shotPath) out += "**Screenshot:** " + shotPath + "\n";
-        if (imgRef) out += "![" + "annotation " + (i + 1) + "](" + imgRef + ")\n";
-        out += "**Feedback:** " + a.comment + "\n\n";
-      } else {
-        out += "### " + (i + 1) + ". " + a.element + "\n";
-        out += "**URL:** " + url + "\n";
-        out += "**Location:** " + a.elementPath + "\n";
-        if (a.xpath) out += "**XPath:** " + a.xpath + "\n";
-        if (dl === "detailed") {
-          if (a.cssClasses) out += "**Classes:** " + a.cssClasses + "\n";
-          if (a.boundingBox) {
-            var b = a.boundingBox;
-            out += "**Position:** " + Math.round(b.x) + "px, " + Math.round(b.y) +
-              "px (" + Math.round(b.width) + "\u00d7" + Math.round(b.height) + "px)\n";
-          }
-          if (a.nearbyText && !a.selectedText) out += "**Context:** " + a.nearbyText.slice(0, 100) + "\n";
-        }
-        if (a.selectedText) out += '**Selected text:** "' + a.selectedText + '"\n';
-        var imgRef = a.screenshot && a.screenshot.dataUrl ? a.screenshot.dataUrl : shotPath;
-        if (shotPath) out += "**Screenshot:** " + shotPath + "\n";
-        if (imgRef) out += "![" + "annotation " + (i + 1) + "](" + imgRef + ")\n";
-        out += "**Feedback:** " + a.comment + "\n\n";
       }
     });
 
-    return out.trim();
+    if (images.length) {
+      L.push("");
+      L.push("images:");
+      L = L.concat(images);
+    }
+
+    return L.join("\n");
   }
 
   // ═══════════════════════════════════════════
