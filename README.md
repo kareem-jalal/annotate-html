@@ -13,7 +13,7 @@ annotate three elements, paste the packet into your agent.
 
 ## Install (load unpacked)
 
-1. Clone this repository — the loadable extension lives in `extension/`.
+1. Clone this repository and find `Browser Tools/annotate-html/extension/`.
 2. Open `chrome://extensions` and toggle **Developer mode** (top right).
 3. **Load unpacked** → select the `extension/` folder.
 4. Pin **tea-annotate** to the toolbar.
@@ -151,7 +151,7 @@ rejects manifest paths containing `..` and so needs a physical copy inside the
 bundle. After any edit:
 
 ```bash
-cd extension && ./sync.sh
+cd "Browser Tools/annotate-html/extension" && ./sync.sh
 node --check ../annotate.js
 diff -q ../annotate.js ./annotate.js && echo identical
 ```

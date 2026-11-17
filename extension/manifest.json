@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "tea-annotate",
   "short_name": "tea-annotate",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Annotate any page, get a YAML packet with element screenshots for AI agents. Fork of annotate-html by Asim Sayed.",
   "homepage_url": "https://github.com/the-tea-team/tea-annotate",
   "action": {

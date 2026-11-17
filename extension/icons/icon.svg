@@ -1,17 +1,18 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="tea-annotate: a teacup with a pencil">
-  <rect width="128" height="128" rx="28" fill="#191310"/>
-  <rect x="0.75" y="0.75" width="126.5" height="126.5" rx="27.25" fill="none" stroke="#F2EADB" stroke-opacity="0.14" stroke-width="1.5"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="tea-annotate: a pencil writing on a teacup">
+  <rect width="128" height="128" rx="26" fill="#191310"/>
 
-  <!-- teacup -->
-  <path d="M29 58h56v20c0 14.4-12.1 26-27 26S29 92.4 29 78V58Z" fill="#F2EADB"/>
-  <path d="M87 64h5.5a11.5 11.5 0 0 1 0 23H87" fill="none" stroke="#F2EADB" stroke-width="7.5" stroke-linecap="round"/>
-  <!-- saucer -->
-  <rect x="22" y="105" width="70" height="8" rx="4" fill="#F2EADB" fill-opacity="0.72"/>
+  <!-- mug, handle on the left so the pencil owns the right side -->
+  <path d="M28 54h58v30c0 12-7 20-19 20H47c-12 0-19-8-19-20V54Z" fill="#F2EADB"/>
+  <path d="M28 62h-4a12 12 0 0 0 0 24h4" fill="none" stroke="#F2EADB" stroke-width="8" stroke-linecap="round"/>
 
-  <!-- pencil, standing in the cup -->
-  <g transform="rotate(-20 58 54)">
-    <rect x="51" y="14" width="15" height="52" rx="3.5" fill="#D9A441"/>
-    <path d="M51 14 66 14 58.5 2Z" fill="#F2EADB"/>
-    <rect x="51" y="52" width="15" height="6" fill="#B98429"/>
+  <!-- the mark being written on the cup face -->
+  <path d="M42 74c5-7 10-7 14 0s9 7 14 0" fill="none" stroke="#D9A441" stroke-width="4.5" stroke-linecap="round"/>
+
+  <!-- pencil, tip down on the cup, body rising to the top right -->
+  <g transform="translate(70 70) rotate(38)">
+    <rect x="-7.5" y="-62" width="15" height="52" rx="3.5" fill="#D9A441"/>
+    <rect x="-7.5" y="-62" width="15" height="6" rx="3" fill="#B98429"/>
+    <path d="M-7.5 -10h15L0 4Z" fill="#F2EADB"/>
+    <path d="M-3.4 1h6.8L0 6Z" fill="#191310"/>
   </g>
 </svg>

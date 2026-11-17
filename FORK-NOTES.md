@@ -2,7 +2,7 @@
 
 ## Where this came from
 
-This repository is a fork of
+`Browser Tools/annotate-html` is a fork of
 [AsimSayed/annotate-html](https://github.com/AsimSayed/annotate-html) by Asim
 Sayed, MIT licensed. The upstream project last moved on 2026-05-02; the Jethur
 fork started 2026-10-20 and carries changes upstream does not have.
@@ -20,7 +20,7 @@ Kept from the fork, none of it upstream:
 
 - Rebranded as **tea-annotate** (1.4.0). The original carried the Anthropic
   palette and glyphs; that is gone. In its place: a warm dark surface ramp with a
-  single hojicha-gold accent, a teacup-and-pencil icon, a gold reticle cursor, a
+  single hojicha-gold accent, an icon of a pencil writing on a teacup, a gold reticle cursor, a
   pencil in place of the asterisk mark, and a cream primary action, because on a
   dark surface the off-white fill outranks a coloured one. Gold is reserved for
   the pin, the active state and focus.

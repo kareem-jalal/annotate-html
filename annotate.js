@@ -1185,7 +1185,10 @@
       'width:100vw;height:100vh;max-width:none;max-height:none;overflow:visible;',
       'pointer-events:none;color:inherit;z-index:2147483000}',
       // The root itself must not swallow clicks; its widgets opt back in.
-      '#ann-root *{pointer-events:auto}',
+      // Only the widgets that take input opt back in, by id: a universal rule
+      // out-ranks the pointer-events:none that the collapsed face relies on and
+      // turns an invisible overlay into a click trap.
+      '#ann-root > #ann-toolbar,#ann-root > #ann-popup,#ann-root > #ann-color-picker{pointer-events:auto}',
       '#ann-root #ann-hover-highlight,#ann-root #ann-hover-label,',
       '#ann-root #ann-toast,#ann-root #ann-tip,#ann-root .ann-preview,',
       '#ann-root .ann-shot-preview{pointer-events:none !important}',
