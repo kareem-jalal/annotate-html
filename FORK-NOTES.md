@@ -14,8 +14,28 @@ The original copyright notice is kept verbatim in [LICENSE](LICENSE) and the
 credit also sits in the header of `annotate.js` itself, so it travels with the
 file even when copied out of this repository.
 
+## Ideas taken from elsewhere
+
+The keyboard walk and the design tab implement ideas seen in
+[vibe-annotations](https://github.com/RaphaelRegnier/vibe-annotations). That
+project is source-available under **PolyForm Shield 1.0.0**, not an open-source
+licence, so **no code was copied** — both behaviours were reimplemented from
+scratch against this file. Their model is worth naming because it shaped ours:
+one `pending_changes` map per annotation, applied inline while you edit, exported
+as an old → new pair.
+
 ## What changed here
 
+- **Keyboard element selection.** Arrows walk the tree in annotation mode
+  (↑ parent, ↓ retrace the walked path, ←/→ siblings) and Enter selects, so
+  small nested targets do not have to be hit with a pointer. The walk stack is
+  cleared whenever the pointer moves, so the two input methods never disagree
+  about the anchor.
+- **Design tab.** The composer can nudge padding, radius, gap, font size/weight
+  and colours on the selected element and applies them live, while the packet
+  records a `property: from → to` pair so the agent fixes it in source. The
+  preview is inline and reversible; revert, delete, clear and reload all have
+  defined behaviour.
 Kept from the fork, none of it upstream:
 
 - Rebranded as **tea-annotate** (1.4.0). The original carried the Anthropic

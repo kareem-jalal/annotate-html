@@ -26,7 +26,8 @@ version of this folder.
 1. Click the toolbar icon — or press **Alt+Shift+A** — on any tab. The toolbar
    appears in the bottom-right corner.
 2. Click **Annotate** or press **Alt+A**. Hover an element to see its selector
-   and highlight, then click it.
+   and highlight, then click it — or steer with the arrow keys and press
+   **Enter** when the outline is on the right element.
 3. Write the feedback in the popup and submit. A numbered marker drops at the
    click position; hover a marker to preview, click it to edit.
 4. Press **C** to copy every annotation as one YAML packet, then paste it into
@@ -43,10 +44,56 @@ the way. Rulers slide in along the top and left edges for alignment checks.
 | `Alt+A` | Toggle annotation mode |
 | `C` | Copy the YAML packet |
 | `D` | Download the YAML packet to disk |
+| `↑ ↓ ← →` | In annotation mode: walk to the parent, back down the path you
+walked, or across siblings |
+| `Enter` | In annotation mode: select the outlined element |
 | `M` | Marker colour picker |
 | `H` | Show/hide markers, rulers and guides |
 | `Cmd/Ctrl+Enter` | Submit the open annotation |
 | `Esc` | Close the popup, or leave annotation mode |
+
+### Picking an element with the keyboard
+
+Pointing at a 14px icon inside three nested wrappers is a bad way to spend a
+minute. In annotation mode the arrows walk the tree instead:
+
+- **↑** outlines the parent — the useful move, because the thing you want to
+  change is usually a level up from the text you clicked.
+- **↓** retraces exactly the path ↑ walked, so it never guesses at "first child".
+- **← / →** step across siblings.
+- **Enter** opens the composer on whatever is outlined.
+
+Move the mouse and the pointer becomes the anchor again. The key hints appear in
+the hover label once you start using them.
+
+## Design tab
+
+Some feedback is easier to show than to write. The **Design** tab of the composer
+puts a handful of controls on the selected element and applies them to the live
+page as you nudge:
+
+- padding, corner radius, and gap (when the element is flex or grid)
+- font size and weight (on text elements)
+- text and background colour
+
+What lands in the packet is not the inline style but the pair it replaced:
+
+```yaml
+design:
+  - property: "padding"
+    from: "8px"
+    to: "12px"
+```
+
+So an agent implements the change in your stylesheets rather than reproducing a
+DOM patch. If you leave the comment empty, one is derived from the diff
+(`padding 8px → 12px`), and the design block prints at every detail level.
+
+The preview is live but not permanent: `Reset to original` in the tab (or
+`Revert to original` in a saved note) removes the inline overrides and the
+stylesheet value comes back. Deleting the note or clearing the page reverts too.
+Reloading the page drops the preview and re-applies it from the stored note, so
+the page looks the way it did when you wrote it.
 
 ## What the packet contains
 
@@ -59,8 +106,9 @@ the pixels.
 - Element name, selector path and full XPath
 - CSS classes, bounding box, computed styles and accessibility info
 - Selected text when you highlight before clicking, plus nearby text context
-- A full-viewport JPEG with the element outlined in red, saved to disk **and**
+- A full-viewport JPEG with the element outlined in gold, saved to disk **and**
   embedded as base64 (`images:`), so one paste is self-contained
+- Any design changes you made, as `property: from → to` pairs
 
 `state.detailLevel` selects the field set — `compact`, `standard`, `detailed`
 (default) or `forensic` — but there is no UI switch for it; change the constant

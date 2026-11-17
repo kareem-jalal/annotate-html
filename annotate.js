@@ -672,6 +672,8 @@
 
       updateCount();
       renderMarkers();
+      // Show the page the way it looked when the notes were written.
+      state.annotations.forEach(restoreAnnotationDesign);
       showToast("Restored " + snap.annotations.length + " annotation(s)");
     });
   }
@@ -784,6 +786,16 @@
       if (dl === "forensic") {
         if (a.computedStyles) L.push("    computed_styles: " + yamlStr(a.computedStyles));
         if (a.accessibility) L.push("    accessibility: " + yamlStr(a.accessibility));
+      }
+      // A design change is the point of the note, so it prints at every detail
+      // level, not just forensic.
+      if (a.design && Object.keys(a.design).length) {
+        L.push("    design:");
+        Object.keys(a.design).forEach(function (prop) {
+          L.push("      - property: " + yamlStr(cssPropName(prop)));
+          L.push("        from: " + yamlStr(String(a.design[prop].from)));
+          L.push("        to: " + yamlStr(String(a.design[prop].to)));
+        });
       }
       L.push("    feedback: " + yamlStr(a.comment));
       if (shotPath || dataUrl) {
@@ -1059,6 +1071,50 @@
       'font-family:inherit;-webkit-font-smoothing:antialiased;',
       'resize:vertical;min-height:64px;outline:none;line-height:1.55;',
       'transition:border-color .15s ease,background .15s ease}',
+
+      // Composer tabs: Note | Design
+      '#ann-popup .ann-tabs{display:flex;gap:2px;margin:0 0 12px;',
+      'border-bottom:1px solid rgba(242,234,219,0.10)}',
+      '#ann-popup .ann-tab{background:none;border:none;border-radius:7px 7px 0 0;color:#7E7264;font:inherit;',
+      'font-size:12px;font-weight:600;padding:6px 10px 8px;cursor:pointer;position:relative}',
+      '#ann-popup .ann-tab:hover{color:#B6A896}',
+      '#ann-popup .ann-tab.active{color:#F2EADB;background:rgba(242,234,219,0.07)}',
+      '#ann-popup .ann-tab.active::after{content:"";position:absolute;left:8px;right:8px;bottom:-1px;',
+      'height:2px;background:#D9A441;border-radius:2px}',
+      '#ann-popup .ann-tab .ann-tab-count{color:#D9A441;background:rgba(217,164,65,0.16);',
+      'border-radius:999px;padding:0 5px;margin-left:5px;font-size:10.5px;font-variant-numeric:tabular-nums}',
+
+      // Design rows: label, minus, value, plus
+      '#ann-popup .ann-design{display:flex;flex-direction:column;gap:9px}',
+      '#ann-popup .ann-drow{display:grid;grid-template-columns:1fr 24px 64px 24px;align-items:center;gap:6px}',
+      '#ann-popup .ann-drow.wide{grid-template-columns:1fr 124px}',
+      '#ann-popup .ann-dlabel{font-size:12px;color:#C2B5A2;white-space:nowrap;overflow:hidden;',
+      'text-overflow:ellipsis}',
+      '#ann-popup .ann-drow.changed .ann-dlabel{color:#F2EADB}',
+      '#ann-popup .ann-dval{box-sizing:border-box;height:24px;display:flex;align-items:center;justify-content:center;',
+      'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;',
+      'color:#F2EADB;text-align:center;font-variant-numeric:tabular-nums;background:#221A15;',
+      'border:1px solid rgba(242,234,219,0.20);border-radius:7px;padding:4px 6px;cursor:ns-resize;',
+      'user-select:none}',
+      '#ann-popup .ann-dval:focus{outline:none;border-color:#D9A441}',
+      '#ann-popup .ann-dbtn{box-sizing:border-box;width:24px;height:24px;padding:0;display:flex;align-items:center;',
+      'justify-content:center;background:#221A15;border:1px solid rgba(242,234,219,0.20);',
+      'border-radius:7px;color:#F2EADB;cursor:pointer;font-size:14px;line-height:1}',
+      '#ann-popup .ann-dbtn:hover{background:#2B211A}',
+      '#ann-popup .ann-drow input[type=color]{box-sizing:border-box;width:100%;height:24px;padding:2px;',
+      'border:1px solid rgba(242,234,219,0.10);border-radius:7px;background:#221A15;cursor:pointer}',
+      '#ann-popup .ann-drow input[type=color]::-webkit-color-swatch{border:none;border-radius:5px}',
+      '#ann-popup .ann-drow input[type=color]::-webkit-color-swatch-wrapper{padding:0}',
+      '#ann-popup .ann-dhint{font-size:11px;color:#C2B5A2;margin:0 0 6px;line-height:1.45}',
+      '#ann-popup .ann-dreset{background:none;border:none;color:#C2B5A2;font:inherit;font-size:11.5px;',
+      'padding:2px 0 0;margin-bottom:-2px;cursor:pointer;text-decoration:underline;text-underline-offset:2px;text-align:left}',
+      '#ann-popup .ann-dreset:hover{color:#F2EADB}',
+      '#ann-popup .ann-dlist{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;',
+      'color:#B6A896;margin:0;padding:0 0 4px;list-style:none;line-height:1.6}',
+
+      // Keyboard-selection hint inside the hover label
+      '#ann-hover-label .ann-keys{color:#C2B5A2;margin-left:10px;font-size:10.5px;letter-spacing:.02em}',
+      '#ann-hover-label .ann-keys b{color:#D9A441;font-weight:600}',
       '#ann-popup textarea::placeholder{color:#8C8071}',
       '#ann-popup textarea:focus{border-color:#D9A441;background:#191310}',
 
@@ -1976,10 +2032,25 @@
     }
   }
 
+  // camelCase style prop -> CSS property name, for setProperty/removeProperty
+  function cssPropName(prop) {
+    return String(prop).replace(/[A-Z]/g, function (m) { return "-" + m.toLowerCase(); });
+  }
+
+  // Best-effort re-find of the element an annotation was made on.
+  function elementForAnnotation(ann) {
+    if (!ann || !ann.xpath) return null;
+    try {
+      var r = document.evaluate(ann.xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+      return r && r.singleNodeValue && r.singleNodeValue.nodeType === 1 ? r.singleNodeValue : null;
+    } catch (e) { return null; }
+  }
+
   function hideHover() {
     hoverHighlight.style.display = "none";
     hoverLabel.style.display = "none";
     state.hoveredEl = null;
+    navStack.length = 0;
   }
 
   function hideToolbar() {
@@ -2169,6 +2240,8 @@
 
   function clearAll() {
     if (!state.annotations.length) return;
+    // Put the page back: every live design preview this session is undone.
+    state.annotations.forEach(revertAnnotationDesign);
     state.annotations = [];
     updateCount();
     renderMarkers();
@@ -2228,10 +2301,27 @@
   // Popup (comment input)
   // ═══════════════════════════════════════════
 
+  var popupDiscard = null;
+
   function closePopup() {
     if (popup && popup.parentNode) popup.parentNode.removeChild(popup);
     popup = null;
     closeColorPicker();
+    if (popupDiscard) {
+      var discard = popupDiscard;
+      popupDiscard = null;
+      try { discard(); } catch (e) {}
+    }
+  }
+
+  // The design tab makes the popup taller than the click position allows.
+  function clampPopupToViewport() {
+    if (!popup) return;
+    var r = popup.getBoundingClientRect();
+    var maxLeft = window.innerWidth - r.width - 8;
+    var maxTop = window.innerHeight - r.height - 8;
+    if (r.left > maxLeft) popup.style.left = Math.max(8, maxLeft) + "px";
+    if (r.top > maxTop) popup.style.top = Math.max(8, maxTop) + "px";
   }
 
   function getStyleEntries(target) {
@@ -2280,6 +2370,206 @@
     popup.style.top = Math.min(y + 12, window.innerHeight - 220) + "px";
   }
 
+  // ═══════════════════════════════════════════
+  // Design tab — live CSS preview, recorded as a change
+  // ═══════════════════════════════════════════
+  // The edit is applied to the live element so the user can see what they mean.
+  // What ships in the packet is not the inline style but the before/after pair,
+  // so the agent implements it in source instead of patching the DOM.
+
+  var TEXT_TAGS = {
+    p: 1, h1: 1, h2: 1, h3: 1, h4: 1, h5: 1, h6: 1, span: 1, a: 1, label: 1, li: 1,
+    td: 1, th: 1, strong: 1, em: 1, small: 1, b: 1, i: 1, code: 1, pre: 1,
+    blockquote: 1, button: 1, legend: 1, dt: 1, dd: 1, summary: 1, figcaption: 1
+  };
+
+  var DESIGN_LENGTH_ROWS = [
+    { prop: "padding", label: "Padding", step: 1, shift: 10, min: 0, max: 240 },
+    { prop: "borderRadius", label: "Radius", step: 1, shift: 10, min: 0, max: 240 },
+  ];
+  var DESIGN_TEXT_ROWS = [
+    { prop: "fontSize", label: "Font size", step: 1, shift: 10, min: 6, max: 200 },
+    { prop: "fontWeight", label: "Weight", step: 100, shift: 100, min: 100, max: 900, unit: "" },
+  ];
+
+  function hasOwnText(node) {
+    for (var i = 0; i < node.childNodes.length; i++) {
+      var c = node.childNodes[i];
+      if (c.nodeType === 3 && c.textContent.replace(/\s+/g, "")) return true;
+    }
+    return false;
+  }
+
+  function rgbToHex(v) {
+    var m = /rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/.exec(v || "");
+    if (!m) return "#000000";
+    function h(n) { var x = (+n).toString(16); return x.length === 1 ? "0" + x : x; }
+    return "#" + h(m[1]) + h(m[2]) + h(m[3]);
+  }
+
+  function designRowsFor(target) {
+    var cs = getComputedStyle(target);
+    var rows = DESIGN_LENGTH_ROWS.slice();
+    if (/flex|grid/.test(cs.display)) {
+      rows.push({ prop: "gap", label: "Gap", step: 1, shift: 10, min: 0, max: 240 });
+    }
+    var textish = TEXT_TAGS[target.tagName.toLowerCase()] || hasOwnText(target);
+    if (textish) {
+      rows = rows.concat(DESIGN_TEXT_ROWS);
+      rows.push({ prop: "color", label: "Text colour", kind: "color" });
+    }
+    rows.push({ prop: "backgroundColor", label: "Background", kind: "color" });
+    return rows;
+  }
+
+  function computedValue(target, prop) {
+    var v;
+    try { v = getComputedStyle(target)[prop]; } catch (e) { v = ""; }
+    return v == null ? "" : String(v);
+  }
+
+  function numericValue(target, prop) {
+    var n = parseFloat(computedValue(target, prop));
+    return isNaN(n) ? 0 : Math.round(n);
+  }
+
+  function applyDesign(target, prop, cssValue) {
+    try { target.style.setProperty(cssPropName(prop), cssValue); } catch (e) {}
+  }
+
+  function revertDesignValue(target, prop) {
+    try { target.style.removeProperty(cssPropName(prop)); } catch (e) {}
+  }
+
+  function revertDesignChanges(target, changes) {
+    Object.keys(changes || {}).forEach(function (prop) { revertDesignValue(target, prop); });
+  }
+
+  function designSummary(changes) {
+    return Object.keys(changes || {}).map(function (prop) {
+      return cssPropName(prop) + " " + changes[prop].from + " \u2192 " + changes[prop].to;
+    }).join(", ");
+  }
+
+  function revertAnnotationDesign(ann) {
+    if (!ann || !ann.design) return;
+    var target = elementForAnnotation(ann);
+    if (target) revertDesignChanges(target, ann.design);
+    ann.design = null;
+  }
+
+  // Re-apply the recorded preview after a reload so the page looks the way it did
+  // when the note was written. Best effort: the element may be gone.
+  function restoreAnnotationDesign(ann) {
+    if (!ann || !ann.design) return;
+    var target = elementForAnnotation(ann);
+    if (!target) return;
+    Object.keys(ann.design).forEach(function (prop) {
+      var to = ann.design[prop] && ann.design[prop].to;
+      if (to) applyDesign(target, prop, to);
+    });
+  }
+
+  function formatRow(val, unit) {
+    return String(val) + (unit == null ? "px" : unit);
+  }
+
+  // Builds the panel; mutates `changes` as the user edits and calls onDirty so the
+  // tab can show a count.
+  function buildDesignPanel(target, changes, onDirty) {
+    var wrap = el("div", { className: "ann-design" });
+    var resetters = [];
+
+    wrap.appendChild(el("p", { className: "ann-dhint" },
+      "Applies to the live page and ships as a before/after change."));
+
+    designRowsFor(target).forEach(function (row) {
+      if (row.kind === "color") {
+        var fromRaw = computedValue(target, row.prop);
+        var fromHex = rgbToHex(fromRaw);
+        var input = el("input", { type: "color", "aria-label": row.label });
+        input.value = fromHex;
+        var rowEl = el("div", { className: "ann-drow wide" });
+        rowEl.appendChild(el("span", { className: "ann-dlabel" }, row.label));
+        rowEl.appendChild(input);
+        input.addEventListener("input", function () {
+          if (input.value.toLowerCase() === fromHex.toLowerCase()) {
+            delete changes[row.prop];
+            revertDesignValue(target, row.prop);
+          } else {
+            changes[row.prop] = { from: fromHex, to: input.value };
+            applyDesign(target, row.prop, input.value);
+          }
+          rowEl.classList.toggle("changed", changes[row.prop] != null);
+          onDirty();
+        });
+        resetters.push(function () {
+          input.value = fromHex;
+          revertDesignValue(target, row.prop);
+          rowEl.classList.remove("changed");
+        });
+        wrap.appendChild(rowEl);
+        return;
+      }
+
+      var unit = row.unit == null ? "px" : row.unit;
+      var from = numericValue(target, row.prop);
+      var value = from;
+      var rowEl2 = el("div", { className: "ann-drow" });
+      var label = el("span", { className: "ann-dlabel" }, row.label);
+      var valEl = el("div", { className: "ann-dval", tabindex: "0", role: "spinbutton",
+        "aria-label": row.label, title: "Arrow keys to nudge, Shift for x10" }, formatRow(value, unit));
+      var minus = el("button", { className: "ann-dbtn", "aria-label": "Decrease " + row.label }, "\u2212");
+      var plus = el("button", { className: "ann-dbtn", "aria-label": "Increase " + row.label }, "+");
+
+      function commit(next) {
+        value = Math.max(row.min, Math.min(row.max, next));
+        valEl.textContent = formatRow(value, unit);
+        if (value === from) {
+          delete changes[row.prop];
+          revertDesignValue(target, row.prop);
+        } else {
+          changes[row.prop] = { from: formatRow(from, unit), to: formatRow(value, unit) };
+          applyDesign(target, row.prop, formatRow(value, unit));
+        }
+        rowEl2.classList.toggle("changed", changes[row.prop] != null);
+        onDirty();
+      }
+      function nudge(dir, big) {
+        commit(value + dir * row.step * (big ? Math.max(1, Math.round(row.shift / row.step)) : 1));
+      }
+
+      minus.addEventListener("click", function () { nudge(-1, false); });
+      plus.addEventListener("click", function () { nudge(1, false); });
+      valEl.addEventListener("keydown", function (e) {
+        if (e.key === "ArrowUp" || e.key === "ArrowRight") { e.preventDefault(); nudge(1, e.shiftKey); }
+        else if (e.key === "ArrowDown" || e.key === "ArrowLeft") { e.preventDefault(); nudge(-1, e.shiftKey); }
+        else if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); e.stopPropagation(); }
+      });
+
+      rowEl2.appendChild(label);
+      rowEl2.appendChild(minus);
+      rowEl2.appendChild(valEl);
+      rowEl2.appendChild(plus);
+      resetters.push(function () {
+        value = from;
+        valEl.textContent = formatRow(from, unit);
+        revertDesignValue(target, row.prop);
+        rowEl2.classList.remove("changed");
+      });
+      wrap.appendChild(rowEl2);
+    });
+
+    var reset = el("button", { className: "ann-dreset", onClick: function () {
+      Object.keys(changes).forEach(function (prop) { delete changes[prop]; });
+      resetters.forEach(function (fn) { fn(); });
+      onDirty();
+    } }, "Reset to original");
+    wrap.appendChild(reset);
+
+    return wrap;
+  }
+
   function showPopup(clickX, clickY, info, rect, selectedText) {
     closePopup();
 
@@ -2290,16 +2580,58 @@
     var hp = buildPopupHeader(info.name, info.target);
     var textarea = el("textarea", { placeholder: "What should change?", rows: "3" });
 
+    var designTarget = info.target;
+    var designChanges = {};
+
+    var noteTab = el("button", { className: "ann-tab active", type: "button" }, "Note");
+    var designTab = el("button", { className: "ann-tab", type: "button" }, "Design");
+    var tabCount = el("span", { className: "ann-tab-count" });
+    designTab.appendChild(tabCount);
+    var tabs = el("div", { className: "ann-tabs" }, [noteTab, designTab]);
+
+    function updateTabCount() {
+      var n = Object.keys(designChanges).length;
+      tabCount.textContent = n ? String(n) : "";
+    }
+
+    var notePanel = el("div", {}, [textarea]);
+    var designPanel = el("div", {}, [buildDesignPanel(designTarget, designChanges, updateTabCount)]);
+    designPanel.style.display = "none";
+
+    function setTab(which) {
+      var design = which === "design";
+      noteTab.classList.toggle("active", !design);
+      designTab.classList.toggle("active", design);
+      notePanel.style.display = design ? "none" : "block";
+      designPanel.style.display = design ? "block" : "none";
+      if (!design) textarea.focus();
+      clampPopupToViewport();
+    }
+    noteTab.addEventListener("click", function () { setTab("note"); });
+    designTab.addEventListener("click", function () { setTab("design"); });
+
+    function discardDesign() {
+      revertDesignChanges(designTarget, designChanges);
+      Object.keys(designChanges).forEach(function (k) { delete designChanges[k]; });
+      popupDiscard = null;
+    }
+    popupDiscard = discardDesign;
+
     var cancelBtn = el("button", { onClick: function () { closePopup(); } }, "Cancel");
     var addBtn = el("button", { className: "primary", onClick: function () {
       var comment = textarea.value.trim();
-      if (!comment) { closePopup(); return; }
+      var hasDesign = Object.keys(designChanges).length > 0;
+      if (!comment && !hasDesign) { closePopup(); return; }
+      // Saved, not discarded: the preview stays on the page and the annotation
+      // records the pair, so deleting the note reverts it.
+      popupDiscard = null;
 
       var annotation = {
         id: "ann-" + (++state.counter),
         x: clickX + window.scrollX,
         y: clickY + window.scrollY,
-        comment: comment,
+        comment: comment || designSummary(designChanges),
+        design: Object.keys(designChanges).length ? JSON.parse(JSON.stringify(designChanges)) : undefined,
         element: info.name,
         elementPath: info.path,
         url: window.location.href,
@@ -2336,11 +2668,14 @@
 
     popup.appendChild(hp.header);
     popup.appendChild(hp.styles);
-    popup.appendChild(textarea);
+    popup.appendChild(tabs);
+    popup.appendChild(notePanel);
+    popup.appendChild(designPanel);
     popup.appendChild(actions);
 
     positionPopup(clickX, clickY);
     mount(popup);
+    clampPopupToViewport();
     textarea.focus();
 
     textarea.addEventListener("keydown", function (e) {
@@ -2367,11 +2702,31 @@
     var textarea = el("textarea", { placeholder: "What should change?", rows: "3" });
     textarea.value = ann.comment;
 
+    var designBlock = null;
+    if (ann.design && Object.keys(ann.design).length) {
+      designBlock = el("div", {});
+      designBlock.appendChild(el("p", { className: "ann-dhint" }, "Recorded design change"));
+      var list = el("ul", { className: "ann-dlist" });
+      Object.keys(ann.design).forEach(function (prop) {
+        list.appendChild(el("li", {}, cssPropName(prop) + ": " + ann.design[prop].from +
+          " \u2192 " + ann.design[prop].to));
+      });
+      designBlock.appendChild(list);
+      designBlock.appendChild(el("button", { className: "ann-dreset", onClick: function () {
+        revertAnnotationDesign(ann);
+        updateCount();
+        renderMarkers();
+        scheduleSave();
+        closePopup();
+      } }, "Revert to original"));
+    }
+
     var trashBtn = el("button", {
       className: "icon-only",
       title: "Delete annotation",
       "aria-label": "Delete annotation",
       onClick: function () {
+        revertAnnotationDesign(ann);
         state.annotations.splice(index, 1);
         updateCount();
         renderMarkers();
@@ -2386,6 +2741,7 @@
       var comment = textarea.value.trim();
       if (!comment) {
         // Empty save = delete
+        revertAnnotationDesign(ann);
         state.annotations.splice(index, 1);
       } else {
         ann.comment = comment;
@@ -2412,11 +2768,13 @@
       }));
     }
     popup.appendChild(hp.styles);
+    if (designBlock) popup.appendChild(designBlock);
     popup.appendChild(textarea);
     popup.appendChild(actions);
 
     positionPopup(x, y);
     mount(popup);
+    clampPopupToViewport();
     textarea.focus();
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
 
@@ -2504,17 +2862,25 @@
     return false;
   }
 
-  function handleMouseMove(e) {
-    if (!state.active) return;
-    if (isToolbarElement(e.target)) { hideHover(); return; }
+  // Keyboard selection state. navStack holds the ancestors ArrowUp walked so
+  // ArrowDown can retrace the exact path instead of guessing at a child.
+  var navStack = [];
+  var keyNavUsed = false;
 
-    var target = document.elementFromPoint(e.clientX, e.clientY);
-    if (!target || isToolbarElement(target)) { hideHover(); return; }
+  function isNavigable(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node === document.documentElement || node === document.body) return false;
+    if (rootEl && rootEl.contains(node)) return false;
+    if (isToolbarElement(node)) return false;
+    return true;
+  }
 
+  // Paint the highlight + label for one element. Shared by the pointer and the
+  // keyboard so both paths look and behave identically.
+  function paintHover(target) {
     state.hoveredEl = target;
     var rect = target.getBoundingClientRect();
 
-    // Highlight box
     hoverHighlight.style.display = "block";
     hoverHighlight.style.left = rect.left + "px";
     hoverHighlight.style.top = rect.top + "px";
@@ -2523,16 +2889,65 @@
     hoverHighlight.style.borderColor = state.markerColor;
     hoverHighlight.style.background = state.markerColor + "0A";
 
-    // Label
     var info = identifyElement(target);
     hoverLabel.style.display = "block";
     hoverLabel.textContent = info.name + "  " + info.path;
+    // Progressive disclosure: the key hints appear once the user has actually
+    // navigated with the keyboard, so the pointer flow stays uncluttered.
+    if (keyNavUsed) {
+      var keys = el("span", { className: "ann-keys" });
+      keys.innerHTML = "<b>&#8593;</b> parent &#183; <b>&#8592;&#8594;</b> sibling &#183; <b>Enter</b> select";
+      hoverLabel.appendChild(keys);
+    }
 
-    // Position label above element or below if too high
     var labelTop = rect.top - 28;
     if (labelTop < 4) labelTop = rect.bottom + 6;
     hoverLabel.style.left = Math.max(4, rect.left) + "px";
     hoverLabel.style.top = labelTop + "px";
+  }
+
+  function handleMouseMove(e) {
+    if (!state.active) return;
+    if (isToolbarElement(e.target)) { hideHover(); return; }
+
+    var target = document.elementFromPoint(e.clientX, e.clientY);
+    if (!target || isToolbarElement(target)) { hideHover(); return; }
+
+    // The pointer is the anchor: any keyboard trail from here is stale.
+    navStack.length = 0;
+    paintHover(target);
+  }
+
+  // Arrows walk the DOM: up to the parent, down back along the walked path,
+  // left/right across siblings.
+  function navigateSelection(dir) {
+    var current = state.hoveredEl;
+    if (!isNavigable(current)) return;
+    var next = null;
+    if (dir === "up") next = current.parentElement;
+    else if (dir === "down") next = navStack.pop();
+    else if (dir === "prev") next = current.previousElementSibling;
+    else if (dir === "next") next = current.nextElementSibling;
+    if (!isNavigable(next)) { if (dir === "down") navStack.length = 0; return; }
+    if (dir === "up") navStack.push(current);
+    keyNavUsed = true;
+    paintHover(next);
+  }
+
+  // Enter commits the highlighted element as the annotation target.
+  function selectHovered() {
+    var target = state.hoveredEl;
+    if (!isNavigable(target)) return;
+    var info = identifyElement(target);
+    info.target = target;
+    var rect = target.getBoundingClientRect();
+    var sel = window.getSelection();
+    var selectedText = sel && sel.toString().trim() ? sel.toString().trim() : null;
+    showPopup(
+      Math.round(rect.left + rect.width / 2),
+      Math.round(rect.top + rect.height / 2),
+      info, rect, selectedText
+    );
   }
 
   function handleClick(e) {
@@ -2567,6 +2982,22 @@
         toggleActive();
       }
     }
+    // Crosshair keyboard selection: arrows walk the DOM, Enter selects.
+    if (state.active && !popup && !colorPicker &&
+        !(document.activeElement && /^(TEXTAREA|INPUT)$/.test(document.activeElement.tagName))) {
+      var nav = { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "prev", ArrowRight: "next" }[e.key];
+      if (nav) {
+        e.preventDefault(); e.stopPropagation();
+        navigateSelection(nav);
+        return;
+      }
+      if (e.key === "Enter" && state.hoveredEl) {
+        e.preventDefault(); e.stopPropagation();
+        selectHovered();
+        return;
+      }
+    }
+
     // Single-key shortcuts (only when no popup/input is focused)
     if (!e.metaKey && !e.ctrlKey && !e.altKey && !popup && !colorPicker &&
         document.activeElement && document.activeElement.tagName !== "TEXTAREA" &&
