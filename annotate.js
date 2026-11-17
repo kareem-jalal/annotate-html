@@ -1,9 +1,16 @@
 // =============================================================================
-// Annotate.js — Standalone visual feedback tool for AI coding agents
-// Inspired by Agentation (benjitaylor/agentation), rebuilt for plain HTML.
-// No React. No build step. Just drop a <script> tag.
+// Annotate.js — visual feedback tool for AI coding agents
 //
-// Usage: <script src="annotate.js"></script>
+// Original project: annotate-html by Asim Sayed (MIT)
+//   https://github.com/AsimSayed/annotate-html
+// This is the Jethur fork: "Browser Tools/annotate-html" in jethur-utils.
+//   See FORK-NOTES.md beside this file for what differs.
+// Element identification adapted from Agentation (benjitaylor/agentation, MIT).
+//
+// No React. No build step. No dependencies.
+// Runs two ways, both executing this file:
+//   - the extension/ bundle injects it on demand (full features, screenshots)
+//   - <script src="annotate.js"></script> in a page you control (no screenshots)
 // =============================================================================
 
 (function () {
@@ -34,13 +41,13 @@
     markersHidden: false,
     toolbarHidden: false,
     rulerDragging: false,
-    markerColor: "#C96442",
+    markerColor: "#D9A441",
     shotDir: null,
   };
 
   var MARKER_COLORS = [
-    "#C96442", "#EF4444", "#F59E0B",
-    "#22C55E", "#06B6D4", "#3B82F6", "#8B5CF6",
+    "#D9A441", "#C4573C", "#8FA96B",
+    "#4F8FA6", "#7E6BA8", "#C77D9E", "#5F6B73",
   ];
 
   // ═══════════════════════════════════════════
@@ -356,7 +363,12 @@
         var w = Math.min(outW - x, rect.width * k + pad * 2);
         var h = Math.min(outH - y, rect.height * k + pad * 2);
         if (w > 0 && h > 0) {
-          ctx.strokeStyle = "#FF2D2D";
+          // Two strokes: a dark rim keeps the box legible on pale pages, the gold
+          // line keeps it on brand. The pair survives any background.
+          ctx.strokeStyle = "#191310";
+          ctx.lineWidth = Math.max(3, Math.round(3 * k));
+          ctx.strokeRect(x, y, w, h);
+          ctx.strokeStyle = "#D9A441";
           ctx.lineWidth = Math.max(2, Math.round(2 * k));
           ctx.strokeRect(x, y, w, h);
         }
@@ -391,6 +403,279 @@
     return shotFolder() + "/ann-" + n + ".jpg";
   }
 
+  // ═══════════════════════════════════════════
+  // Persistence — survive reload, restart, and leaving the page
+  // ═══════════════════════════════════════════
+  // Two layers:
+  //   1. chrome.storage.local, keyed per page, restored on every load. This is
+  //      the live state: refresh the tab and the pins come back.
+  //   2. a YAML sidecar written next to the screenshots, overwritten in place,
+  //      so the feedback is also readable on disk without the tool.
+  // Both are extension-only. The plain <script> channel has neither API and
+  // keeps behaving exactly as before.
+  var STORE_PREFIX = "ann:page:";
+  var STORE_INDEX = "ann:index";
+  var STORE_MAX_PAGES = 30;
+  var STORE_MAX_AGE = 14 * 24 * 60 * 60 * 1000;
+  var SAVE_DEBOUNCE = 400;
+  var SIDECAR_DEBOUNCE = 2500;
+
+  var saveTimer = null;
+  var sidecarTimer = null;
+  var sidecarHash = null;
+
+  var storeCache = null;
+
+  // Three channels, one interface: chrome.storage.local when an extension hosts
+  // us, GM_* inside a userscript manager, localStorage for a plain <script>.
+  // Everything below uses the chrome-shaped callbacks, so the save/restore code
+  // does not care which one answered.
+  function storageArea() {
+    if (storeCache) return storeCache;
+
+    try {
+      if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+        storeCache = chrome.storage.local;
+        return storeCache;
+      }
+    } catch (e) { /* not an extension context */ }
+
+    if (typeof GM_getValue === "function" && typeof GM_setValue === "function") {
+      storeCache = gmStore();
+      return storeCache;
+    }
+
+    try {
+      if (typeof localStorage !== "undefined") {
+        storeCache = localStore();
+        return storeCache;
+      }
+    } catch (e) { /* storage disabled: private mode, sandboxed iframe */ }
+
+    return null;
+  }
+
+  // One key holding the whole page map: atomic writes, and no dependence on how
+  // many discrete values the userscript manager allows.
+  var GM_KEY = "annotate-html:pages";
+
+  function gmReadAll() {
+    var raw = GM_getValue(GM_KEY, "{}");
+    if (raw && typeof raw === "object") return raw;
+    try { return JSON.parse(raw) || {}; } catch (e) { return {}; }
+  }
+
+  function gmStore() {
+    return {
+      get: function (key, cb) {
+        var all = gmReadAll();
+        var out = {};
+        if (all[key] !== undefined) out[key] = all[key];
+        setTimeout(function () { cb(out); }, 0);
+      },
+      set: function (patch) {
+        var all = gmReadAll();
+        Object.keys(patch).forEach(function (k) { all[k] = patch[k]; });
+        GM_setValue(GM_KEY, JSON.stringify(all));
+      },
+      remove: function (keys) {
+        var all = gmReadAll();
+        (Array.isArray(keys) ? keys : [keys]).forEach(function (k) { delete all[k]; });
+        GM_setValue(GM_KEY, JSON.stringify(all));
+      },
+    };
+  }
+
+  var LS_PREFIX = "annotate-html:";
+
+  function localStore() {
+    // Fail fast when storage is blocked rather than pretending the save worked.
+    var probe = LS_PREFIX + "probe";
+    localStorage.setItem(probe, "1");
+    localStorage.removeItem(probe);
+
+    return {
+      get: function (key, cb) {
+        var out = {};
+        try {
+          var raw = localStorage.getItem(LS_PREFIX + key);
+          if (raw) out[key] = JSON.parse(raw);
+        } catch (e) { /* corrupt entry: behave like a miss */ }
+        setTimeout(function () { cb(out); }, 0);
+      },
+      set: function (patch) {
+        Object.keys(patch).forEach(function (k) {
+          try { localStorage.setItem(LS_PREFIX + k, JSON.stringify(patch[k])); } catch (e) {}
+        });
+      },
+      remove: function (keys) {
+        (Array.isArray(keys) ? keys : [keys]).forEach(function (k) {
+          try { localStorage.removeItem(LS_PREFIX + k); } catch (e) {}
+        });
+      },
+    };
+  }
+
+  // Query and hash are dropped so SPA route params do not split one page's
+  // annotations across buckets. Every annotation still carries the full URL it
+  // was taken on, so the packet stays exact.
+  function pageKey() {
+    return STORE_PREFIX + window.location.origin + window.location.pathname;
+  }
+
+  function plainAnnotation(a) {
+    var out = {};
+    for (var k in a) {
+      if (Object.prototype.hasOwnProperty.call(a, k) && k.charAt(0) !== "_") out[k] = a[k];
+    }
+    return out;
+  }
+
+  function snapshot() {
+    return {
+      v: 1,
+      url: window.location.href,
+      title: document.title || "",
+      ts: Date.now(),
+      counter: state.counter,
+      markerColor: state.markerColor,
+      shotDir: state.shotDir || null,
+      annotations: state.annotations.map(plainAnnotation),
+    };
+  }
+
+  function fnv(str) {
+    var h = 0x811c9dc5;
+    for (var i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+    }
+    return h.toString(16);
+  }
+
+  function saveNow() {
+    var store = storageArea();
+    if (!store) return;
+    var key = pageKey();
+
+    if (!state.annotations.length) {
+      store.remove(key);
+      updateIndex(key, null);
+      return;
+    }
+
+    var snap = snapshot();
+    var patch = {};
+    patch[key] = snap;
+    store.set(patch);
+    updateIndex(key, snap.ts);
+  }
+
+  // Newest first, capped by count and age. Evicted pages lose their stored
+  // annotations only — screenshots on disk are never deleted by a prune.
+  function updateIndex(key, ts) {
+    var store = storageArea();
+    if (!store) return;
+    store.get(STORE_INDEX, function (data) {
+      var idx = (data && data[STORE_INDEX]) || [];
+      var next = idx.filter(function (e) { return e && e.key !== key; });
+      if (ts) next.unshift({ key: key, ts: ts });
+
+      var cutoff = Date.now() - STORE_MAX_AGE;
+      next = next.filter(function (e) { return e.ts >= cutoff; });
+      var dropped = next.slice(STORE_MAX_PAGES);
+      next = next.slice(0, STORE_MAX_PAGES);
+
+      var patch = {};
+      patch[STORE_INDEX] = next;
+      store.set(patch);
+      if (dropped.length) store.remove(dropped.map(function (e) { return e.key; }));
+    });
+  }
+
+  function sidecarName() {
+    return shotFolder() + "/annotations.yaml";
+  }
+
+  function writeSidecar() {
+    if (!extensionRuntime()) return;
+    var packet = generateOutput();
+    if (!packet) return;
+
+    // generateOutput stamps `generated:` on every call, so hash the annotations
+    // rather than the packet: repeated saves with no change write nothing.
+    var hash = fnv(JSON.stringify(state.annotations.map(plainAnnotation)) + state.markerColor);
+    if (hash === sidecarHash) return;
+
+    sendToExtension({ type: "ann-write-yaml", name: sidecarName(), text: packet })
+      .then(function (res) {
+        if (res && res.ok) sidecarHash = hash;
+      });
+  }
+
+  function scheduleSidecar() {
+    if (!extensionRuntime()) return;
+    clearTimeout(sidecarTimer);
+    sidecarTimer = setTimeout(function () {
+      sidecarTimer = null;
+      writeSidecar();
+    }, SIDECAR_DEBOUNCE);
+  }
+
+  function scheduleSave() {
+    if (!storageArea()) return;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(function () {
+      saveTimer = null;
+      saveNow();
+    }, SAVE_DEBOUNCE);
+    scheduleSidecar();
+  }
+
+  // Flush both layers when the page is going away, so the last edit is not lost
+  // in a debounce window.
+  function flushSave() {
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; saveNow(); }
+    if (sidecarTimer) { clearTimeout(sidecarTimer); sidecarTimer = null; }
+    writeSidecar();
+  }
+
+  function restoreState() {
+    var store = storageArea();
+    if (!store) return;
+    var key = pageKey();
+
+    store.get(key, function (data) {
+      var snap = data && data[key];
+      if (!snap || !snap.annotations || !snap.annotations.length) return;
+      // A second injection on a page that already restored must not duplicate.
+      if (state.annotations.length) return;
+
+      state.annotations = snap.annotations;
+      state.counter = Math.max(
+        typeof snap.counter === "number" ? snap.counter : 0,
+        snap.annotations.length
+      );
+      // Keep new ids clear of restored ones ("ann-7" etc.).
+      state.annotations.forEach(function (a) {
+        var m = /^ann-(\d+)$/.exec(a.id || "");
+        if (m) state.counter = Math.max(state.counter, parseInt(m[1], 10));
+      });
+      if (snap.markerColor) {
+        state.markerColor = snap.markerColor;
+        updateAccentColor(snap.markerColor);
+        if (colorSwatch) colorSwatch.style.background = snap.markerColor;
+      }
+      // Reuse the original shot folder so new screenshots and the sidecar land
+      // beside the restored ones instead of starting a second folder.
+      state.shotDir = snap.shotDir || null;
+
+      updateCount();
+      renderMarkers();
+      showToast("Restored " + snap.annotations.length + " annotation(s)");
+    });
+  }
+
   // Fire-and-forget capture: annotations must never block on the screenshot.
   function attachScreenshot(annotation, rect, num) {
     if (!extensionRuntime()) return;
@@ -410,6 +695,7 @@
       .then(function (saved) {
         if (saved && saved.filename) shot.path = saved.filename;
         renderMarkers();
+        scheduleSave();
         return shot.dataUrl ? shot : null;
       })
       .catch(function () {
@@ -445,7 +731,8 @@
     var L = [];
 
     // Agent-facing header: what this is, how to read it cheaply, how to decode images.
-    L.push("# annotate-html page feedback - a structured annotation packet for AI agents.");
+    L.push("# tea-annotate packet - structured page feedback for AI agents.");
+    L.push("# Fork of annotate-html by Asim Sayed (MIT). See FORK-NOTES.md.");
     L.push("# Each entry under `annotations:` is one element-level note from a human reviewer:");
     L.push("# `feedback` says what to change, `xpath`/`location` say exactly where.");
     L.push("# Reading this cheaply: all metadata is above; the ONLY bulk is the `images:`");
@@ -528,24 +815,30 @@
     var style = document.createElement("style");
     style.id = "annotate-js-styles";
     style.textContent = [
-      // Design tokens (Claude-native palette)
-      // --ann-bg:        #FAF9F5  cream surface
-      // --ann-bg-alt:    #F5F4ED  recessed surface
-      // --ann-ink:       #1F1E1D  primary text
-      // --ann-ink-mute:  #75726B  secondary text
-      // --ann-line:      rgba(31,30,29,.08) hairline
-      // --ann-accent:    #C96442  Claude orange
-      // --ann-accent-bg: rgba(201,100,66,.10)
+      // Palette — warm dark ramp (roasted tea) and one hojicha-gold accent.
+      // Depth comes from surface steps and hairlines, never gradients; gold is
+      // reserved for the pin, the active state and focus, so the cream primary
+      // action stays the strongest thing in the popup.
+      // --ann-bg:        #191310  surface (toolbar, popup, tip)
+      // --ann-bg-alt:    #221A15  recessed (inputs, style block)
+      // --ann-bg-hover:  #2B211A  hover surface
+      // --ann-ink:       #F2EADB  primary text, cream
+      // --ann-ink-soft:  #B6A896  secondary text
+      // --ann-ink-mute:  #8C8071  tertiary text, placeholder
+      // --ann-line:      rgba(242,234,219,.10) hairline
+      // --ann-accent:    #D9A441  gold: pins, active, focus
+      // --ann-accent-dk: #B98429  pressed gold
+      // --ann-accent-bg: rgba(217,164,65,.10)
 
       // Toolbar
       '#ann-toolbar{position:fixed;bottom:24px;right:24px;z-index:99999;',
       'font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;',
       '-webkit-font-smoothing:antialiased;font-feature-settings:"ss01","cv11";',
       'font-size:13px;display:flex;align-items:center;gap:4px;',
-      'background:#FAF9F5;color:#1F1E1D;padding:6px;border-radius:14px;',
+      'background:#191310;color:#F2EADB;padding:6px;border-radius:14px;',
       'height:44px;max-width:600px;overflow:hidden;',
-      'border:1px solid rgba(31,30,29,.08);',
-      'box-shadow:0 1px 2px rgba(31,30,29,.04),0 8px 24px rgba(31,30,29,.10);',
+      'border:1px solid rgba(242,234,219,0.14);',
+      'box-shadow:0 1px 2px rgba(6,4,2,0.14),0 10px 28px rgba(6,4,2,0.34);',
       'transition:max-width .36s cubic-bezier(.65,0,.35,1),',
       'padding .36s cubic-bezier(.65,0,.35,1),',
       'border-radius .36s cubic-bezier(.65,0,.35,1),',
@@ -556,9 +849,9 @@
       // Collapsed (round button) state — same element morphs
       '#ann-toolbar.collapsed{max-width:44px;padding:0;border-radius:50%;',
       'overflow:visible;justify-content:center;cursor:grab;',
-      'box-shadow:0 1px 2px rgba(31,30,29,.04),0 6px 18px rgba(31,30,29,.10)}',
+      'box-shadow:0 1px 2px rgba(6,4,2,0.10),0 6px 18px rgba(6,4,2,0.24)}',
       '@media (hover:hover){#ann-toolbar.collapsed:hover{',
-      'box-shadow:0 2px 4px rgba(31,30,29,.06),0 10px 28px rgba(31,30,29,.14)}}',
+      'box-shadow:0 2px 4px rgba(6,4,2,0.14),0 10px 28px rgba(6,4,2,0.34)}}',
 
       // Children fade — fast out on collapse, delayed in on expand
       '#ann-toolbar > *:not(.ann-collapsed-view){',
@@ -568,13 +861,13 @@
 
       // The collapsed face — pencil icon + badge, sits absolute over the row
       '.ann-collapsed-view{position:absolute;inset:0;display:flex;align-items:center;',
-      'justify-content:center;color:#C96442;pointer-events:none;opacity:0;',
+      'justify-content:center;color:#D9A441;pointer-events:none;opacity:0;',
       'transition:opacity .14s ease 0s}',
       '#ann-toolbar.collapsed .ann-collapsed-view{opacity:1;pointer-events:auto;',
       'transition:opacity .14s ease .22s}',
       '.ann-collapsed-view svg{width:18px;height:18px;display:block}',
       '.ann-collapsed-view .ann-collapsed-badge{position:absolute;top:-4px;right:-4px;',
-      'background:#C96442;color:#FAF9F5;border:1.5px solid #FAF9F5;',
+      'background:#D9A441;color:#191310;border:1.5px solid #F2EADB;',
       'border-radius:100px;min-width:17px;height:17px;padding:0 4px;',
       'font-size:10px;font-weight:600;font-variant-numeric:tabular-nums;',
       'display:flex;align-items:center;justify-content:center;line-height:1;',
@@ -584,27 +877,27 @@
       '.ann-collapsed-view .ann-collapsed-badge.bump{animation:ann-badge-pop .35s cubic-bezier(.2,.8,.2,1)}',
 
 
-      '#ann-toolbar button{background:none;border:none;color:#1F1E1D;cursor:pointer;',
+      '#ann-toolbar button{background:none;border:none;color:#F2EADB;cursor:pointer;',
       'padding:7px 10px;border-radius:9px;font-size:13px;font-weight:500;font-family:inherit;',
       'transition:background .15s ease,color .15s ease,transform .1s ease;',
       'display:inline-flex;align-items:center;gap:6px;white-space:nowrap;line-height:1}',
       '#ann-toolbar button svg{width:18px;height:18px;flex-shrink:0;display:block}',
-      '@media (hover:hover){#ann-toolbar button:hover{background:#F0EEE6;color:#1F1E1D}}',
+      '@media (hover:hover){#ann-toolbar button:hover{background:#2B211A;color:#F2EADB}}',
       '#ann-toolbar button:active{transform:scale(.97)}',
-      '#ann-toolbar button.active{background:rgba(201,100,66,.10);color:#C96442}',
+      '#ann-toolbar button.active{background:rgba(217,164,65,.10);color:#D9A441}',
       '#ann-toolbar button.icon-only{padding:7px}',
 
       // Eye-toggle button with corner badge
       '#ann-toolbar .ann-eye-btn{position:relative}',
       '#ann-toolbar .ann-eye-badge{position:absolute;top:-3px;right:-3px;',
-      'background:#C96442;color:#FAF9F5;border:1.5px solid #FAF9F5;',
+      'background:#D9A441;color:#191310;border:1.5px solid #F2EADB;',
       'border-radius:100px;min-width:17px;height:17px;padding:0 4px;',
       'font-size:10px;font-weight:600;font-variant-numeric:tabular-nums;',
       'display:flex;align-items:center;justify-content:center;line-height:1;',
       'pointer-events:none;transform-origin:center;',
       'transition:transform .2s cubic-bezier(.2,.8,.2,1)}',
       '#ann-toolbar .ann-eye-badge.empty{display:none}',
-      '#ann-toolbar .ann-eye-btn.hidden-state{color:#75726B}',
+      '#ann-toolbar .ann-eye-btn.hidden-state{color:#8C8071}',
       // pop on increment
       '@keyframes ann-badge-pop{0%{transform:scale(1)}40%{transform:scale(1.25)}100%{transform:scale(1)}}',
       '#ann-toolbar .ann-eye-badge.bump{animation:ann-badge-pop .35s cubic-bezier(.2,.8,.2,1)}',
@@ -615,17 +908,17 @@
 
       // Color swatch (toolbar circle)
       '#ann-toolbar .ann-color-swatch{width:22px;height:22px;border-radius:50%;cursor:pointer;',
-      'border:2px solid rgba(31,30,29,.10);flex-shrink:0;',
+      'border:2px solid rgba(242,234,219,0.10);flex-shrink:0;',
       'transition:transform .15s ease,border-color .15s ease}',
       '@media (hover:hover){#ann-toolbar .ann-color-swatch:hover{transform:scale(1.1);',
-      'border-color:rgba(31,30,29,.25)}}',
+      'border-color:rgba(242,234,219,0.25)}}',
       '#ann-toolbar .ann-color-swatch:active{transform:scale(.95)}',
 
       // Color picker popover
       '#ann-color-picker{position:fixed;z-index:99998;',
-      'background:#FAF9F5;border:1px solid rgba(31,30,29,.08);',
+      'background:#191310;border:1px solid rgba(242,234,219,0.10);',
       'border-radius:12px;padding:10px 14px;',
-      'box-shadow:0 1px 2px rgba(31,30,29,.04),0 12px 32px rgba(31,30,29,.14);',
+      'box-shadow:0 1px 2px rgba(6,4,2,0.10),0 12px 32px rgba(6,4,2,0.34);',
       'display:flex;gap:8px;align-items:center;',
       'animation:ann-popup-in .2s cubic-bezier(.2,.8,.2,1) both}',
       '.ann-color-opt{width:28px;height:28px;border-radius:50%;cursor:pointer;',
@@ -633,52 +926,52 @@
       'transition:transform .12s ease}',
       '@media (hover:hover){.ann-color-opt:hover{transform:scale(1.15)}}',
       '.ann-color-opt:active{transform:scale(.92)}',
-      '.ann-color-opt.active{box-shadow:0 0 0 2px #FAF9F5,0 0 0 3.5px #1F1E1D}',
+      '.ann-color-opt.active{box-shadow:0 0 0 2px #191310,0 0 0 3.5px #F2EADB}',
 
       // Custom toolbar tooltip (pops above)
       '#ann-tip{position:fixed;z-index:100000;',
-      'background:#FAF9F5;border:1px solid rgba(31,30,29,.08);',
+      'background:#191310;border:1px solid rgba(242,234,219,0.10);',
       'border-radius:8px;padding:5px 10px;',
-      'box-shadow:0 2px 12px rgba(31,30,29,.12);',
+      'box-shadow:0 2px 12px rgba(6,4,2,0.29);',
       'font-family:ui-sans-serif,-apple-system,system-ui,sans-serif;',
       '-webkit-font-smoothing:antialiased;',
-      'font-size:12px;font-weight:500;color:#1F1E1D;',
+      'font-size:12px;font-weight:500;color:#F2EADB;',
       'white-space:nowrap;pointer-events:none;',
       'opacity:0;transform:translateX(-50%) translateY(4px);',
       'transition:opacity .1s ease,transform .1s ease}',
       '#ann-tip.show{opacity:1;transform:translateX(-50%) translateY(0)}',
-      '#ann-tip .ann-tip-key{color:#9A968E;margin-left:6px;font-size:11px;font-weight:400}',
+      '#ann-tip .ann-tip-key{color:#B6A896;margin-left:6px;font-size:11px;font-weight:400}',
       "#ann-tip::after{content:'';position:absolute;bottom:-5px;left:50%;",
       'transform:translateX(-50%);',
       'border-left:5px solid transparent;border-right:5px solid transparent;',
-      'border-top:5px solid #FAF9F5}',
+      'border-top:5px solid #191310}',
 
-      '#ann-toolbar .ann-divider{width:1px;height:18px;background:rgba(31,30,29,.10);margin:0 2px}',
+      '#ann-toolbar .ann-divider{width:1px;height:18px;background:rgba(242,234,219,0.10);margin:0 2px}',
 
       '#ann-toolbar select{appearance:none;-webkit-appearance:none;-moz-appearance:none;',
-      'background-color:#F5F4ED;',
-      'background-image:url("data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%2375726B\' stroke-width=\'2.5\' stroke-linecap=\'round\' stroke-linejoin=\'round\'><path d=\'m6 9 6 6 6-6\'/></svg>");',
+      'background-color:#221A15;',
+      'background-image:url("data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%238C8071\' stroke-width=\'2.5\' stroke-linecap=\'round\' stroke-linejoin=\'round\'><path d=\'m6 9 6 6 6-6\'/></svg>");',
       'background-repeat:no-repeat;background-position:right 9px center;',
-      'border:1px solid rgba(31,30,29,.08);',
-      'color:#1F1E1D;border-radius:8px;padding:5px 26px 5px 10px;',
+      'border:1px solid rgba(242,234,219,0.10);',
+      'color:#F2EADB;border-radius:8px;padding:5px 26px 5px 10px;',
       'font-size:12px;font-weight:500;line-height:1.4;',
       'font-family:inherit;cursor:pointer;transition:border-color .15s ease}',
-      '#ann-toolbar select:hover{border-color:rgba(31,30,29,.18)}',
-      '#ann-toolbar select:focus{outline:none;border-color:#C96442}',
+      '#ann-toolbar select:hover{border-color:rgba(242,234,219,0.18)}',
+      '#ann-toolbar select:focus{outline:none;border-color:#D9A441}',
       '#ann-toolbar select::-ms-expand{display:none}',
 
       // Hover highlight
       '#ann-hover-highlight{position:fixed;z-index:99990;pointer-events:none;',
-      'border:1.5px solid #C96442;border-radius:4px;',
-      'background:rgba(201,100,66,.04);',
+      'border:1.5px solid #D9A441;border-radius:4px;',
+      'background:rgba(217,164,65,.04);',
       'transition:all .12s cubic-bezier(.2,.8,.2,1)}',
 
       // Hover label
       '#ann-hover-label{position:fixed;z-index:99991;pointer-events:none;',
-      'background:#1F1E1D;color:#FAF9F5;',
+      'background:#F2EADB;color:#191310;',
       'padding:5px 10px;border-radius:7px;font-size:11px;font-weight:500;',
       'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;',
-      'white-space:nowrap;box-shadow:0 4px 16px rgba(31,30,29,.18)}',
+      'white-space:nowrap;box-shadow:0 4px 16px rgba(6,4,2,0.43)}',
 
       // Markers — outer wrapper handles position + entry pop only (no visual)
       '.ann-marker{position:absolute;z-index:99992;width:24px;height:24px;',
@@ -687,11 +980,11 @@
       'animation:ann-pop .3s cubic-bezier(.2,.8,.2,1) backwards}',
       // Inner circle — the actual visible pin, scales on hover
       '.ann-marker-circle{cursor:pointer;width:24px;height:24px;border-radius:50%;',
-      'background:#C96442;color:#FAF9F5;',
+      'background:#D9A441;color:#191310;',
       'font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;',
       'display:flex;align-items:center;justify-content:center;',
-      'border:2px solid #FAF9F5;box-sizing:border-box;',
-      'box-shadow:0 1px 2px rgba(31,30,29,.10),0 4px 12px rgba(201,100,66,.30);',
+      'border:2px solid #F2EADB;box-sizing:border-box;',
+      'box-shadow:0 1px 2px rgba(6,4,2,0.24),0 4px 12px rgba(217,164,65,.30);',
       'font-family:ui-sans-serif,-apple-system,system-ui,sans-serif;',
       'transform-origin:center;',
       'transition:transform .2s cubic-bezier(.2,.8,.2,1),box-shadow .2s ease}',
@@ -701,7 +994,7 @@
       '.ann-marker .ann-marker-edit svg{width:13px;height:13px;display:block}',
       '@media (hover:hover){.ann-marker:hover .ann-marker-circle{',
       'transform:scale(1.3);',
-      'box-shadow:0 2px 4px rgba(31,30,29,.12),0 8px 22px rgba(201,100,66,.42)}',
+      'box-shadow:0 2px 4px rgba(6,4,2,0.29),0 8px 22px rgba(217,164,65,.42)}',
       '.ann-marker:hover .ann-marker-num{display:none}',
       '.ann-marker:hover .ann-marker-edit{display:flex}}',
       '@keyframes ann-pop{from{transform:translate(-50%,-50%) scale(.8);opacity:0}',
@@ -709,26 +1002,26 @@
 
       // Marker tooltip
       '.ann-marker-tip{position:absolute;left:30px;top:50%;transform:translateY(-50%);',
-      'background:#FAF9F5;color:#1F1E1D;',
+      'background:#191310;color:#F2EADB;',
       'padding:10px 12px;border-radius:10px;font-size:12px;min-width:200px;max-width:320px;',
-      'border:1px solid rgba(31,30,29,.08);',
-      'box-shadow:0 1px 2px rgba(31,30,29,.04),0 12px 32px rgba(31,30,29,.14);',
+      'border:1px solid rgba(242,234,219,0.10);',
+      'box-shadow:0 1px 2px rgba(6,4,2,0.10),0 12px 32px rgba(6,4,2,0.34);',
       'pointer-events:none;white-space:normal;line-height:1.5;text-wrap:pretty;',
       'opacity:0;transition:opacity .15s}',
       '.ann-marker:hover .ann-marker-tip{opacity:1}',
-      '.ann-marker-tip .ann-tip-element{color:#9A968E;font-size:11px;',
+      '.ann-marker-tip .ann-tip-element{color:#C2B5A2;font-size:11.5px;',
       'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;',
       'display:block;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-      '.ann-marker-tip .ann-tip-comment{color:#1F1E1D;font-size:12px;line-height:1.5}',
+      '.ann-marker-tip .ann-tip-comment{color:#F2EADB;font-size:12px;line-height:1.5}',
       '.ann-marker-tip .ann-marker-shot{display:block;width:100%;max-height:120px;',
       'object-fit:cover;object-position:left top;border-radius:6px;',
-      'border:1px solid rgba(31,30,29,.08);margin-bottom:6px}',
+      'border:1px solid rgba(242,234,219,0.10);margin-bottom:6px}',
 
       // Popup (comment input)
-      '#ann-popup{position:fixed;z-index:99998;background:#FAF9F5;',
-      'border:1px solid rgba(31,30,29,.08);',
+      '#ann-popup{position:fixed;z-index:99998;background:#191310;',
+      'border:1px solid rgba(242,234,219,0.10);',
       'border-radius:14px;padding:18px;min-width:320px;max-width:400px;',
-      'box-shadow:0 1px 2px rgba(31,30,29,.04),0 16px 48px rgba(31,30,29,.16);',
+      'box-shadow:0 1px 2px rgba(6,4,2,0.10),0 16px 48px rgba(6,4,2,0.38);',
       'font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;',
       '-webkit-font-smoothing:antialiased;',
       'animation:ann-popup-in .2s cubic-bezier(.2,.8,.2,1) both}',
@@ -738,57 +1031,57 @@
       // Header — inline chevron + element name
       '#ann-popup .ann-popup-header{display:flex;align-items:center;gap:5px;',
       'margin-bottom:8px;cursor:pointer;user-select:none}',
-      '#ann-popup .ann-popup-chevron{color:#9A968E;flex-shrink:0;',
+      '#ann-popup .ann-popup-chevron{color:#B6A896;flex-shrink:0;',
       'width:14px;height:14px;display:block;',
       'transition:transform .15s ease;transform:rotate(-90deg)}',
       '#ann-popup .ann-popup-header.expanded .ann-popup-chevron{transform:rotate(0deg)}',
-      '#ann-popup .ann-popup-label{color:#1F1E1D;font-size:13px;font-weight:400;',
+      '#ann-popup .ann-popup-label{color:#F2EADB;font-size:13px;font-weight:400;',
       'font-family:ui-sans-serif,-apple-system,system-ui,sans-serif;',
       'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}',
 
       // Screenshot thumbnail (captured when the annotation was added)
       '#ann-popup .ann-popup-shot{display:block;width:100%;max-height:180px;',
       'object-fit:cover;object-position:left top;border-radius:8px;',
-      'border:1px solid rgba(31,30,29,.08);margin-bottom:10px}',
+      'border:1px solid rgba(242,234,219,0.10);margin-bottom:10px}',
 
       // Computed styles block (shown when header expanded)
       '#ann-popup .ann-popup-styles{display:none;',
-      'background:#F5F4ED;border:1px solid rgba(31,30,29,.06);',
+      'background:#221A15;border:1px solid rgba(242,234,219,0.10);',
       'border-radius:8px;padding:10px 12px;margin-bottom:12px;',
       'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;',
       'font-size:12px;line-height:1.7;word-break:break-word}',
       '#ann-popup .ann-popup-header.expanded ~ .ann-popup-styles{display:block}',
-      '#ann-popup .ann-popup-styles .ann-prop{color:#C96442}',
-      '#ann-popup .ann-popup-styles .ann-val{color:#1F1E1D}',
+      '#ann-popup .ann-popup-styles .ann-prop{color:#D9A441}',
+      '#ann-popup .ann-popup-styles .ann-val{color:#F2EADB}',
 
-      '#ann-popup textarea{width:100%;background:#F5F4ED;border:1px solid rgba(31,30,29,.08);',
-      'color:#1F1E1D;border-radius:9px;padding:10px 12px;font-size:13px;',
+      '#ann-popup textarea{width:100%;background:#221A15;border:1px solid rgba(242,234,219,0.10);',
+      'color:#F2EADB;border-radius:9px;padding:10px 12px;font-size:13px;',
       'font-family:inherit;-webkit-font-smoothing:antialiased;',
       'resize:vertical;min-height:64px;outline:none;line-height:1.55;',
       'transition:border-color .15s ease,background .15s ease}',
-      '#ann-popup textarea::placeholder{color:#A8A49B}',
-      '#ann-popup textarea:focus{border-color:#C96442;background:#FAF9F5}',
+      '#ann-popup textarea::placeholder{color:#8C8071}',
+      '#ann-popup textarea:focus{border-color:#D9A441;background:#191310}',
 
       '#ann-popup .ann-popup-actions{display:flex;gap:8px;margin-top:12px;align-items:center;',
       'justify-content:flex-end}',
       '#ann-popup .ann-popup-actions .ann-spacer{flex:1}',
 
       '#ann-popup .ann-popup-actions button{background:transparent;border:none;',
-      'color:#75726B;border-radius:9px;padding:8px 16px;font-size:13px;font-weight:500;',
+      'color:#B6A896;border-radius:9px;padding:8px 16px;font-size:13px;font-weight:500;',
       'cursor:pointer;font-family:inherit;',
       'transition:background .15s,color .15s,transform .1s}',
-      '@media (hover:hover){#ann-popup .ann-popup-actions button:hover{color:#1F1E1D}}',
+      '@media (hover:hover){#ann-popup .ann-popup-actions button:hover{color:#F2EADB}}',
       '#ann-popup .ann-popup-actions button:active{transform:scale(.97)}',
-      '#ann-popup .ann-popup-actions button.primary{background:#C96442;',
-      'color:#FAF9F5;border-radius:100px;padding:8px 20px}',
-      '@media (hover:hover){#ann-popup .ann-popup-actions button.primary:hover{background:#B5573A}}',
-      '#ann-popup .ann-popup-actions button.icon-only{padding:7px;color:#9A968E}',
+      '#ann-popup .ann-popup-actions button.primary{background:#F2EADB;',
+      'color:#191310;border-radius:100px;padding:8px 20px}',
+      '@media (hover:hover){#ann-popup .ann-popup-actions button.primary:hover{background:#D9A441}}',
+      '#ann-popup .ann-popup-actions button.icon-only{padding:7px;color:#B6A896}',
       '#ann-popup .ann-popup-actions button.icon-only svg{width:15px;height:15px;display:block}',
       '@media (hover:hover){#ann-popup .ann-popup-actions button.icon-only:hover{',
-      'background:rgba(201,100,66,.10);color:#C96442}}',
+      'background:rgba(217,164,65,.10);color:#D9A441}}',
 
-      // Active cursor — asterisk SVG
-      "body.ann-active{cursor:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 155 157' fill='none'%3E%3Cpath d='M58.8282 156.513L62.2248 103.934L18.2055 133.416L0 101.353L47.4158 78.2565L0 55.1599L18.2055 23.0965L62.2248 52.5786L58.8282 0H95.3751L91.8427 52.5786L135.862 23.0965L154.067 55.1599L106.787 78.2565L154.067 101.353L135.862 133.416L91.8427 103.934L95.3751 156.513H58.8282Z' fill='%23C96442'/%3E%3C/svg%3E\") 14 14,crosshair !important}",
+      // Active cursor — gold reticle
+      "body.ann-active{cursor:" + cursorSvg("#D9A441") + " !important}",
       'body.ann-active *{cursor:inherit !important}',
       // Override crosshair on the tool's own UI
       'body.ann-active #ann-toolbar{cursor:grab !important}',
@@ -810,14 +1103,14 @@
 
       // Copied toast
       '#ann-toast{position:fixed;top:24px;left:50%;transform:translateX(-50%) translateY(-12px);',
-      'z-index:99999;background:#1F1E1D;color:#FAF9F5;padding:10px 18px;',
+      'z-index:99999;background:#F2EADB;color:#191310;padding:10px 18px;',
       'border-radius:100px;font-size:13px;font-weight:500;',
       'font-family:ui-sans-serif,-apple-system,system-ui,sans-serif;',
       '-webkit-font-smoothing:antialiased;',
-      'box-shadow:0 1px 2px rgba(31,30,29,.10),0 12px 32px rgba(31,30,29,.24);',
+      'box-shadow:0 1px 2px rgba(6,4,2,0.24),0 12px 32px rgba(6,4,2,0.58);',
       'opacity:0;transition:all .25s cubic-bezier(.2,.8,.2,1);pointer-events:none;',
       'display:inline-flex;align-items:center;gap:8px}',
-      '#ann-toast svg{width:14px;height:14px;color:#C96442}',
+      '#ann-toast svg{width:14px;height:14px;color:#D9A441}',
       '#ann-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}',
 
       // Rulers — hidden by default, slide in on edge hover
@@ -827,15 +1120,15 @@
       'cursor:crosshair;pointer-events:none;',
       'opacity:0;transition:opacity .15s ease-in,transform .15s ease-in}',
       '#ann-ruler-h{top:0;left:19px;right:0;height:20px;',
-      'border-bottom:1px solid rgba(31,30,29,.08);',
+      'border-bottom:1px solid rgba(242,234,219,0.10);',
       'transform:translateY(-100%)}',
       '#ann-ruler-v{top:19px;left:0;bottom:0;width:20px;',
-      'border-right:1px solid rgba(31,30,29,.08);',
+      'border-right:1px solid rgba(242,234,219,0.10);',
       'transform:translateX(-100%)}',
       '#ann-ruler-corner{position:fixed;z-index:99989;top:0;left:0;width:20px;height:20px;',
       'background:rgba(250,249,245,.92);backdrop-filter:blur(6px);',
-      'border-right:1px solid rgba(31,30,29,.08);',
-      'border-bottom:1px solid rgba(31,30,29,.08);',
+      'border-right:1px solid rgba(242,234,219,0.10);',
+      'border-bottom:1px solid rgba(242,234,219,0.10);',
       'pointer-events:none;opacity:0;transform:scale(.9);',
       'transition:opacity .15s ease-in,transform .15s ease-in}',
       // Show state defines ENTER transition (longer, bouncy easing — confident slide-in)
@@ -855,22 +1148,22 @@
       'cursor:ew-resize;background:none !important;box-sizing:content-box}',
       // Guide handle (drag affordance + label + close)
       '.ann-guide-handle{position:absolute;display:flex;align-items:center;gap:2px;',
-      'background:#FAF9F5;border:1px solid rgba(31,30,29,.10);',
+      'background:#191310;border:1px solid rgba(242,234,219,0.10);',
       'border-radius:6px;padding:3px 3px 3px 8px;',
-      'box-shadow:0 1px 6px rgba(31,30,29,.10);',
+      'box-shadow:0 1px 6px rgba(6,4,2,0.24);',
       'cursor:grab;user-select:none;',
       'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;',
-      'font-size:10px;font-weight:500;color:#1F1E1D;white-space:nowrap;',
+      'font-size:10px;font-weight:500;color:#F2EADB;white-space:nowrap;',
       'font-variant-numeric:tabular-nums;',
       'opacity:0;transition:opacity .15s ease}',
       '.ann-guide:hover .ann-guide-handle,.ann-guide-handle.dragging{opacity:1}',
       '.ann-guide-handle:active{cursor:grabbing}',
       '.ann-guide-h .ann-guide-handle{left:24px;top:50%;transform:translateY(-50%)}',
       '.ann-guide-v .ann-guide-handle{top:24px;left:50%;transform:translateX(-50%)}',
-      '.ann-guide-close{background:none;border:none;color:#9A968E;cursor:pointer;',
+      '.ann-guide-close{background:none;border:none;color:#B6A896;cursor:pointer;',
       'padding:2px;border-radius:4px;display:flex;align-items:center;justify-content:center;',
       'transition:color .12s,background .12s}',
-      '@media (hover:hover){.ann-guide-close:hover{background:rgba(31,30,29,.08);color:#1F1E1D}}',
+      '@media (hover:hover){.ann-guide-close:hover{background:rgba(242,234,219,0.10);color:#F2EADB}}',
       '.ann-guide-close svg{width:12px;height:12px;display:block}',
       // Wider invisible hit area on the line itself
       '.ann-guide::before{content:"";position:absolute}',
@@ -882,6 +1175,24 @@
       '#ann-toolbar,#ann-popup,#ann-toast,.ann-marker,#ann-hover-highlight,',
       '#ann-ruler-h,#ann-ruler-v,#ann-ruler-corner{',
       'transition:none !important;animation:none !important}}',
+
+      // Overlay root. Everything that floats lives here, and the whole root goes
+      // into the browser's top layer via the popover API, so application chrome
+      // (fixed sidebars, drawers, CDK overlays, anything with a bigger z-index or
+      // a transform ancestor) cannot paint over the toolbar, the hover highlight
+      // or the popup. z-index is only the fallback for browsers without popover.
+      '#ann-root{position:fixed;inset:0;margin:0;padding:0;border:0;background:transparent;',
+      'width:100vw;height:100vh;max-width:none;max-height:none;overflow:visible;',
+      'pointer-events:none;color:inherit;z-index:2147483000}',
+      // The root itself must not swallow clicks; its widgets opt back in.
+      '#ann-root *{pointer-events:auto}',
+      '#ann-root #ann-hover-highlight,#ann-root #ann-hover-label,',
+      '#ann-root #ann-toast,#ann-root #ann-tip,#ann-root .ann-preview,',
+      '#ann-root .ann-shot-preview{pointer-events:none !important}',
+
+      // Marker layer stays in normal flow coordinates (page-absolute), so it is
+      // mounted outside the root; it still gets the top z-index it can have.
+      '#ann-markers{z-index:2147482999}',
     ].join("\n");
     document.head.appendChild(style);
   }
@@ -903,6 +1214,39 @@
       else e.appendChild(children);
     }
     return e;
+  }
+
+  // ═══════════════════════════════════════════
+  // Overlay root — the top layer
+  // ═══════════════════════════════════════════
+  // A fixed overlay loses to application chrome whenever the app gives a fixed
+  // sidebar a bigger z-index, drops it in a later stacking context, or opens a
+  // modal <dialog>. The popover API lifts our root into the browser's top layer,
+  // which beats all of that without editing the host application's CSS. Browsers
+  // without popover keep the old behaviour with a maximal z-index.
+  var rootEl = null;
+
+  function overlayRoot() {
+    if (rootEl && rootEl.isConnected) return rootEl;
+
+    rootEl = el("div", { id: "ann-root" });
+    rootEl.setAttribute("popover", "manual");
+    rootEl.style.pointerEvents = "none";
+    document.documentElement.appendChild(rootEl);
+
+    // "manual" popovers ignore Escape and light dismissal, so a stray click in
+    // the page cannot close the tool out from under the user.
+    if (typeof rootEl.showPopover === "function") {
+      try { rootEl.showPopover(); } catch (e) { /* already open */ }
+    }
+    return rootEl;
+  }
+
+  // Floating widgets live inside the root. The marker layer does not: its
+  // children carry page-absolute coordinates, so it stays a body child.
+  function mount(node) {
+    overlayRoot().appendChild(node);
+    return node;
   }
 
   // ═══════════════════════════════════════════
@@ -928,6 +1272,12 @@
     copy: '<svg ' + ICON_ATTRS + '>' +
       '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/>' +
       '<path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>' +
+      '</svg>',
+    // download
+    download: '<svg ' + ICON_ATTRS + '>' +
+      '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>' +
+      '<polyline points="7 10 12 15 17 10"/>' +
+      '<line x1="12" x2="12" y1="15" y2="3"/>' +
       '</svg>',
     // trash-2
     trash: '<svg ' + ICON_ATTRS + '>' +
@@ -965,14 +1315,10 @@
     chevronDown: '<svg ' + ICON_ATTRS + '>' +
       '<path d="m6 9 6 6 6-6"/>' +
       '</svg>',
-    // asterisk logo mark
-    asterisk: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 155 157" fill="currentColor" aria-hidden="true">' +
-      '<path d="M58.8282 156.513L62.2248 103.934L18.2055 133.416L0 101.353L47.4158 78.2565L0 55.1599L18.2055 23.0965L62.2248 52.5786L58.8282 0H95.3751L91.8427 52.5786L135.862 23.0965L154.067 55.1599L106.787 78.2565L154.067 101.353L135.862 133.416L91.8427 103.934L95.3751 156.513H58.8282Z"/>' +
-      '</svg>',
-    // check-circle filled (for copy success)
+    // check-circle filled (for copy success) — matcha, not stock green
     checkCircleFilled: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">' +
-      '<circle cx="12" cy="12" r="10" fill="#22A55A"/>' +
-      '<path d="m8.5 12.5 2.5 2.5 4.5-5" fill="none" stroke="#FAF9F5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<circle cx="12" cy="12" r="10" fill="#8FA96B"/>' +
+      '<path d="m8.5 12.5 2.5 2.5 4.5-5" fill="none" stroke="#191310" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>' +
       '</svg>',
   };
 
@@ -994,9 +1340,18 @@
   var accentSheet;
   var tipEl;
 
+  // A gold reticle. Two passes per shape: a dark rim keeps the cursor legible on
+  // pale pages, the accent keeps it on brand. The hotspot is the centre, which is
+  // the point a user aims at an element.
   function cursorSvg(hex) {
-    var encoded = hex.replace("#", "%23");
-    return "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 155 157' fill='none'%3E%3Cpath d='M58.8282 156.513L62.2248 103.934L18.2055 133.416L0 101.353L47.4158 78.2565L0 55.1599L18.2055 23.0965L62.2248 52.5786L58.8282 0H95.3751L91.8427 52.5786L135.862 23.0965L154.067 55.1599L106.787 78.2565L154.067 101.353L135.862 133.416L91.8427 103.934L95.3751 156.513H58.8282Z' fill='" + encoded + "'/%3E%3C/svg%3E\") 14 14,crosshair";
+    var enc = hex.replace("#", "%23");
+    var ring =
+      "<circle cx='14' cy='14' r='8.5' stroke='%23191310' stroke-width='4' stroke-opacity='.4'/>" +
+      "<circle cx='14' cy='14' r='8.5' stroke='" + enc + "' stroke-width='2'/>" +
+      "<path d='M14 1.75V4.75M14 23.25V26.25M1.75 14H4.75M23.25 14H26.25' stroke='%23191310' stroke-width='4' stroke-opacity='.4' stroke-linecap='round'/>" +
+      "<path d='M14 1.75V4.75M14 23.25V26.25M1.75 14H4.75M23.25 14H26.25' stroke='" + enc + "' stroke-width='2' stroke-linecap='round'/>" +
+      "<circle cx='14' cy='14' r='2' fill='" + enc + "'/>";
+    return "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28' fill='none'%3E" + ring + "%3C/svg%3E\") 14 14,crosshair";
   }
 
   function darkenHex(hex, amt) {
@@ -1009,6 +1364,7 @@
   function updateAccentColor(hex) {
     state.markerColor = hex;
     if (colorSwatch) colorSwatch.style.background = hex;
+    scheduleSave();
 
     if (!accentSheet) {
       accentSheet = document.createElement("style");
@@ -1028,13 +1384,12 @@
       "#ann-popup .ann-popup-label{color:" + hex + "}",
       "#ann-popup .ann-popup-header.expanded .ann-popup-chevron{color:" + hex + "}",
       "#ann-popup textarea:focus{border-color:" + hex + "}",
-      "#ann-popup .ann-popup-actions button.primary{background:" + hex + ";border-color:" + hex + "}",
       "#ann-toast svg{color:" + hex + "}",
       "body.ann-active{cursor:" + cursorSvg(hex) + " !important}",
       "@media (hover:hover){",
       "#ann-popup .ann-popup-actions button.primary:hover{background:" + dark + ";border-color:" + dark + "}",
       "#ann-popup .ann-popup-actions button.icon-only:hover{background:" + bg10 + ";color:" + hex + "}",
-      ".ann-marker:hover .ann-marker-circle{box-shadow:0 2px 4px rgba(31,30,29,.12),0 8px 22px " + bg42 + "}}",
+      ".ann-marker:hover .ann-marker-circle{box-shadow:0 2px 4px rgba(6,4,2,0.29),0 8px 22px " + bg42 + "}}",
     ].join("\n");
 
     renderMarkers();
@@ -1066,12 +1421,12 @@
     // Hover highlight box
     hoverHighlight = el("div", { id: "ann-hover-highlight" });
     hoverHighlight.style.display = "none";
-    document.body.appendChild(hoverHighlight);
+    mount(hoverHighlight);
 
     // Hover label
     hoverLabel = el("div", { id: "ann-hover-label" });
     hoverLabel.style.display = "none";
-    document.body.appendChild(hoverLabel);
+    mount(hoverLabel);
 
     // Markers container
     markersContainer = el("div", { id: "ann-markers", style: "position:absolute;top:0;left:0;width:0;height:0;overflow:visible;z-index:99992" });
@@ -1081,7 +1436,7 @@
     toast = el("div", { id: "ann-toast" });
     toast.appendChild(iconEl("check"));
     toast.appendChild(document.createTextNode("Copied to clipboard"));
-    document.body.appendChild(toast);
+    mount(toast);
 
     // Build toolbar
     toolbar = el("div", { id: "ann-toolbar" });
@@ -1091,14 +1446,14 @@
 
     // Shared tooltip element
     tipEl = el("div", { id: "ann-tip" });
-    document.body.appendChild(tipEl);
+    mount(tipEl);
 
     // Toggle annotate mode
     var toggleBtn = el("button", {
       onClick: toggleActive
     });
     toggleBtn.id = "ann-toggle-btn";
-    toggleBtn.appendChild(iconEl("asterisk"));
+    toggleBtn.appendChild(iconEl("pencil"));
     toggleBtn.appendChild(document.createTextNode("Annotate"));
 
     // Color swatch
@@ -1136,6 +1491,14 @@
     });
     copyBtn.appendChild(iconEl("copy"));
 
+    // Download the packet as a YAML file
+    var downloadBtn = el("button", {
+      className: "icon-only",
+      onClick: downloadOutput,
+      "aria-label": "Download YAML"
+    });
+    downloadBtn.appendChild(iconEl("download"));
+
     // Clear all
     var clearBtn = el("button", {
       className: "icon-only",
@@ -1159,7 +1522,8 @@
     addTip(toggleBtn, "Toggle mode", toggleKey);
     addTip(colorSwatch, "Marker color", "M");
     addTip(eyeBtn, "Show/hide markers", "H");
-    addTip(copyBtn, "Copy markdown", "C");
+    addTip(copyBtn, "Copy YAML", "C");
+    addTip(downloadBtn, "Download YAML", "D");
     addTip(clearBtn, "Clear all");
     addTip(closeBtn, "Close", extKey);
 
@@ -1168,6 +1532,7 @@
     toolbar.appendChild(divider1);
     toolbar.appendChild(eyeBtn);
     toolbar.appendChild(copyBtn);
+    toolbar.appendChild(downloadBtn);
     toolbar.appendChild(clearBtn);
     toolbar.appendChild(divider3);
     toolbar.appendChild(closeBtn);
@@ -1180,7 +1545,7 @@
       title: "Open annotate-html (" + altKey + "+A)",
       "aria-label": "Open annotate toolbar"
     });
-    collapsedView.appendChild(iconEl("asterisk"));
+    collapsedView.appendChild(iconEl("pencil"));
     collapsedBadge = el("span", { className: "ann-collapsed-badge empty" }, "0");
     collapsedView.appendChild(collapsedBadge);
     collapsedView.addEventListener("click", showToolbar);
@@ -1189,7 +1554,7 @@
     });
     toolbar.appendChild(collapsedView);
 
-    document.body.appendChild(toolbar);
+    mount(toolbar);
 
     // Make toolbar draggable
     initToolbarDrag();
@@ -1317,21 +1682,21 @@
 
   function createRulers() {
     rulerCorner = el("div", { id: "ann-ruler-corner" });
-    document.body.appendChild(rulerCorner);
+    mount(rulerCorner);
 
     rulerH = el("div", { id: "ann-ruler-h" });
     rulerHCanvas = document.createElement("canvas");
     rulerHCanvas.height = 20;
     rulerH.appendChild(rulerHCanvas);
     initRulerDrag(rulerH, "v");
-    document.body.appendChild(rulerH);
+    mount(rulerH);
 
     rulerV = el("div", { id: "ann-ruler-v" });
     rulerVCanvas = document.createElement("canvas");
     rulerVCanvas.width = 20;
     rulerV.appendChild(rulerVCanvas);
     initRulerDrag(rulerV, "h");
-    document.body.appendChild(rulerV);
+    mount(rulerV);
 
     drawRulers();
   }
@@ -1347,7 +1712,7 @@
       preview.style.opacity = "0.5";
       var lbl = el("span", { className: "ann-guide-label" }, "0px");
       preview.appendChild(lbl);
-      document.body.appendChild(preview);
+      mount(preview);
 
       function onMove(ev) {
         if (!preview) return;
@@ -1401,8 +1766,8 @@
     var h = window.innerHeight - 20;
     var sx = window.scrollX;
     var sy = window.scrollY;
-    var tickColor = "rgba(31,30,29,.25)";
-    var textColor = "rgba(31,30,29,.5)";
+    var tickColor = "rgba(242,234,219,0.25)";
+    var textColor = "rgba(242,234,219,0.50)";
 
     // Horizontal ruler
     rulerHCanvas.width = w * dpr;
@@ -1519,7 +1884,7 @@
       if (e.target === guide || e.target === guide.querySelector("::before")) startDrag(e);
     });
 
-    document.body.appendChild(guide);
+    mount(guide);
     guides.push(guide);
   }
 
@@ -1699,7 +2064,7 @@
   }
 
   function copyOutput() {
-    // A screenshot may still be cropping/saving; wait so the markdown that
+    // A screenshot may still be cropping/saving; wait so the packet that
     // lands on the clipboard always carries the image paths.
     var pending = state.annotations
       .map(function (a) { return a._shotPromise; })
@@ -1718,10 +2083,110 @@
     Promise.all(pending).then(write, write);
   }
 
+  // ═══════════════════════════════════════════
+  // Download the packet
+  // ═══════════════════════════════════════════
+
+  // Flat name for channels whose download URL cannot carry a subfolder.
+  function packetDownloadName() {
+    var d = new Date();
+    function pad(n) { return n < 10 ? "0" + n : String(n); }
+    var stamp = d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) +
+      "-" + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+    var host = (window.location.hostname || "page").replace(/[^a-z0-9.-]/gi, "-").toLowerCase();
+    return "annotations-" + host + "-" + stamp + ".yaml";
+  }
+
+  function downloadOutput() {
+    if (!state.annotations.length) { showToast("No annotations"); return; }
+
+    // Wait for any in-flight screenshot so the file carries the image paths.
+    var pending = state.annotations
+      .map(function (a) { return a._shotPromise; })
+      .filter(function (p) { return p && typeof p.then === "function"; });
+
+    function write() {
+      var packet = generateOutput();
+      if (!packet) { showToast("No annotations"); return; }
+
+      // Extension: the worker writes it beside the screenshots and overwrites in
+      // place, so clicking download repeatedly cannot stack copies.
+      if (extensionRuntime()) {
+        sendToExtension({
+          type: "ann-write-yaml",
+          name: shotFolder() + "/annotations.yaml",
+          text: packet
+        }).then(function (res) {
+          if (res && res.ok) {
+            var short = res.filename ? res.filename.split("/").slice(-2).join("/") : "annotations.yaml";
+            showToast("Saved " + short);
+          } else {
+            showToast("Download failed" + (res && res.error ? " · " + res.error : ""));
+          }
+        });
+        return;
+      }
+
+      // Userscript manager: GM_download accepts the same Downloads-relative path.
+      if (typeof GM_download === "function") {
+        try {
+          GM_download({
+            url: "data:text/yaml;charset=utf-8," + encodeURIComponent(packet),
+            name: shotFolder() + "/annotations.yaml",
+            saveAs: false,
+            onerror: function () { showToast("Download failed"); }
+          });
+          showToast("Saved annotations.yaml");
+          return;
+        } catch (e) { /* fall through to the anchor channel */ }
+      }
+
+      // Plain page: an object URL on a temporary anchor. The browser flattens the
+      // path, so this one gets a self-describing file name instead of a folder.
+      try {
+        var name = packetDownloadName();
+        var url = URL.createObjectURL(new Blob([packet], { type: "text/yaml;charset=utf-8" }));
+        var a = el("a", { href: url, download: name });
+        a.style.display = "none";
+        document.documentElement.appendChild(a);
+        a.click();
+        setTimeout(function () {
+          URL.revokeObjectURL(url);
+          if (a.parentNode) a.parentNode.removeChild(a);
+        }, 4000);
+        showToast("Saved " + name);
+      } catch (e) {
+        showToast("Download failed");
+      }
+    }
+
+    if (pending.length === 0) { write(); return; }
+    Promise.all(pending).then(write, write);
+  }
+
   function clearAll() {
+    if (!state.annotations.length) return;
     state.annotations = [];
     updateCount();
     renderMarkers();
+    sidecarHash = null;
+
+    // Drop the stored record at once rather than waiting out the debounce, so a
+    // reload right after clearing cannot bring the annotations back.
+    saveNow();
+
+    if (!extensionRuntime()) {
+      showToast("Cleared all annotations");
+      return;
+    }
+    // The sidecar is the tool's own file, so removing it is safe. Screenshots
+    // are left on disk: they may already be referenced from a copied packet.
+    sendToExtension({ type: "ann-delete-file", name: sidecarName() })
+      .then(function (res) {
+        var removed = res && res.removed && res.removed.length;
+        showToast(removed ? "Cleared · YAML removed, screenshots kept" : "Cleared · screenshots kept");
+      })
+      .catch(function () { showToast("Cleared all annotations"); });
   }
 
   // ═══════════════════════════════════════════
@@ -1753,7 +2218,7 @@
     colorPicker.style.bottom = (window.innerHeight - swRect.top + 8) + "px";
     colorPicker.style.right = (window.innerWidth - swRect.right) + "px";
 
-    document.body.appendChild(colorPicker);
+    mount(colorPicker);
   }
 
   // ═══════════════════════════════════════════
@@ -1849,6 +2314,7 @@
       state.annotations.push(annotation);
       updateCount();
       renderMarkers();
+      scheduleSave();
       closePopup();
 
       // Capture after the popup is gone so it can't appear in the image.
@@ -1871,7 +2337,7 @@
     popup.appendChild(actions);
 
     positionPopup(clickX, clickY);
-    document.body.appendChild(popup);
+    mount(popup);
     textarea.focus();
 
     textarea.addEventListener("keydown", function (e) {
@@ -1906,6 +2372,7 @@
         state.annotations.splice(index, 1);
         updateCount();
         renderMarkers();
+        scheduleSave();
         closePopup();
       }
     });
@@ -1922,6 +2389,7 @@
       }
       updateCount();
       renderMarkers();
+      scheduleSave();
       closePopup();
     }}, "Save");
 
@@ -1945,7 +2413,7 @@
     popup.appendChild(actions);
 
     positionPopup(x, y);
-    document.body.appendChild(popup);
+    mount(popup);
     textarea.focus();
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
 
@@ -1969,7 +2437,7 @@
       // Inner visible circle — this scales on hover, the wrapper does not
       var circle = el("div", { className: "ann-marker-circle" });
       circle.style.background = state.markerColor;
-      circle.style.boxShadow = "0 1px 2px rgba(31,30,29,.10),0 4px 12px " +
+      circle.style.boxShadow = "0 1px 2px rgba(242,234,219,0.10),0 4px 12px " +
         state.markerColor + "4D"; // 30% opacity hex suffix
       var numEl = el("span", { className: "ann-marker-num" }, String(i + 1));
       var editEl = el("span", { className: "ann-marker-edit" });
@@ -2102,6 +2570,7 @@
         document.activeElement.tagName !== "INPUT") {
       var k = e.key.toLowerCase();
       if (k === "c" && state.annotations.length > 0) { e.preventDefault(); copyOutput(); }
+      if (k === "d" && state.annotations.length > 0) { e.preventDefault(); downloadOutput(); }
       if (k === "m") { e.preventDefault(); showColorPicker(); }
       if (k === "h") { e.preventDefault(); toggleMarkersVisibility(); }
     }
@@ -2137,6 +2606,14 @@
     document.documentElement.addEventListener("mouseleave", function () {
       hideRulerAxis("h");
       hideRulerAxis("v");
+    });
+
+    // Restore what this page had before the reload, and flush any pending save
+    // when the tab goes away or is backgrounded mid-edit.
+    restoreState();
+    window.addEventListener("pagehide", flushSave);
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "hidden") flushSave();
     });
 
     // Publish a tiny control hook so re-injection (Chrome extension click,
@@ -2183,6 +2660,7 @@
           });
           updateCount();
           renderMarkers();
+          scheduleSave();
         }
         if (seedGuides) {
           seedGuides.forEach(function (g) {

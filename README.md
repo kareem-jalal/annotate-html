@@ -1,126 +1,190 @@
-# annotate-html
+# tea-annotate
 
-Point at things on any webpage. Tell your AI agent what to change.
+Point at any element on a page, write what should change, and copy the whole
+result as a structured packet an AI coding agent can act on. Chrome extension,
+no build step, no dependencies.
 
-One script tag. No framework, no build step, no dependencies. Also ships as a Chrome extension for pages you don't control.
+A branded fork of [annotate-html](https://github.com/AsimSayed/annotate-html) by
+Asim Sayed (MIT) — same mechanism, house palette and name. See
+[FORK-NOTES.md](FORK-NOTES.md) for what changed and why.
 
-## Install
+Use it when a UI detail is easier to point at than to describe: open the page,
+annotate three elements, paste the packet into your agent.
 
-**Script tag** — add before `</body>`:
+## Install (load unpacked)
 
-```html
-<script src="https://cdn.jsdelivr.net/gh/AsimSayed/annotate-html@main/annotate.js"></script>
-```
+1. Clone this repository — the loadable extension lives in `extension/`.
+2. Open `chrome://extensions` and toggle **Developer mode** (top right).
+3. **Load unpacked** → select the `extension/` folder.
+4. Pin **tea-annotate** to the toolbar.
 
-**Chrome extension** — for any page, no code changes needed:
+Re-load the extension (`chrome://extensions` → reload icon) after pulling a new
+version of this folder.
 
-1. Clone this repo
-2. `chrome://extensions` → Developer mode → Load unpacked → select `extension/`
-3. Click the asterisk icon on any tab (or press `Alt+Shift+A`)
+## Usage
 
-Both channels run the same `annotate.js`. The Chrome extension additionally screenshots the whole viewport with the annotated element highlighted in red; the `<script>` tag can't, so its output omits the image lines.
+1. Click the toolbar icon — or press **Alt+Shift+A** — on any tab. The toolbar
+   appears in the bottom-right corner.
+2. Click **Annotate** or press **Alt+A**. Hover an element to see its selector
+   and highlight, then click it.
+3. Write the feedback in the popup and submit. A numbered marker drops at the
+   click position; hover a marker to preview, click it to edit.
+4. Press **C** to copy every annotation as one YAML packet, then paste it into
+   your agent — or **D** / the download icon to save it as a file.
 
-## How it works
-
-1. A toolbar appears bottom-right. Click **Annotate** or press `Alt+A` — an asterisk cursor appears
-2. Hover any element to see its selector and highlight. Click to open a popup with computed styles and a feedback field
-3. Markers drop at your click position. Hover to preview, click to edit
-4. Press `C` to copy all feedback as structured YAML. Paste into Claude Code, Cursor, or any AI coding tool
-
-The toolbar collapses to a round button when closed. Rulers along the top and left edges let you drag out guide lines for alignment.
+The toolbar collapses to a round button when closed and can be dragged out of
+the way. Rulers slide in along the top and left edges for alignment checks.
 
 ### Keyboard shortcuts
 
 | Key | What it does |
-|---|---|
+| --- | --- |
+| `Alt+Shift+A` | Toggle the toolbar (rebind in `chrome://extensions/shortcuts`) |
 | `Alt+A` | Toggle annotation mode |
-| `C` | Copy YAML |
-| `M` | Marker color picker |
-| `H` | Show/hide markers, rulers, guides |
-| `Cmd/Ctrl+Enter` | Submit annotation |
-| `Esc` | Close popup or exit mode |
+| `C` | Copy the YAML packet |
+| `D` | Download the YAML packet to disk |
+| `M` | Marker colour picker |
+| `H` | Show/hide markers, rulers and guides |
+| `Cmd/Ctrl+Enter` | Submit the open annotation |
+| `Esc` | Close the popup, or leave annotation mode |
 
-### Color picker
+## What the packet contains
 
-Click the color swatch or press `M`. Seven colors. Choosing one repaints everything — markers, highlights, cursor, active states, badges, buttons.
+A YAML document, `schema: annotate-html/v1`, with an agent-facing header comment.
+Everything cheap comes first and the only bulk — base64 JPEGs — sits in a single
+`images:` block at the bottom, so an agent can read the metadata and stop before
+the pixels.
 
-## What gets captured
+- Full page URL per annotation, captured at click time (SPA-safe)
+- Element name, selector path and full XPath
+- CSS classes, bounding box, computed styles and accessibility info
+- Selected text when you highlight before clicking, plus nearby text context
+- A full-viewport JPEG with the element outlined in red, saved to disk **and**
+  embedded as base64 (`images:`), so one paste is self-contained
 
-Each annotation records what an AI agent needs to find and fix the right code:
-
-- **Full page URL** — origin, path, query and hash, captured at the moment you click
-- **Element name** — `button "Download"`, `h2 "Features"`, `image "hero.png"`
-- **Selector path** — `.hero > .cta > .btn-primary`
-- **CSS classes, bounding box, computed styles**
-- **Selected text** (if you highlight before clicking)
-- **Nearby text context** from sibling elements
-- **Accessibility info** — role, aria-label, focusable
-- **A full-viewport screenshot** with a red highlight box around the element, in the Chrome extension only — the copied YAML carries the image as base64 in a bottom `images:` block, so pasting to an agent needs no screenshot folder
-
-### Example output
-
-The clipboard payload is YAML with an agent-facing header comment: metadata first, image blobs only at the very bottom, so an agent can read the whole packet cheaply and skip the base64 unless it actually needs the pixels.
-
-```yaml
-# annotate-html page feedback - a structured annotation packet for AI agents.
-# Each entry under `annotations:` is one element-level note from a human reviewer:
-# `feedback` says what to change, `xpath`/`location` say exactly where.
-# Reading this cheaply: all metadata is above; the ONLY bulk is the `images:`
-# block at the very bottom. To skip the base64, read up to the line starting
-# with `images:` and ignore everything after it.
-# Screenshots are full-viewport JPEGs with the annotated element outlined in red.
-# Prefer `screenshot.path` when present - the same JPEG is already on disk.
-# To decode an inline image (id N) to a viewable file:
-#   awk -v id=N '$0=="images:"{p=1;next} p&&$1==id":"{sub(/^[^,]*,/,"");print;exit}' FILE | base64 -d > shot-N.jpg
-# or in Python: after splitting the text on the line `images:`, take the line
-#   starting `N: `, cut everything up to the first comma, base64-decode the rest.
-#
-schema: annotate-html/v1
-generated: "2026-11-15T02:04:11.221Z"
-page:
-  url: "https://example.com/index.html?v=2#pricing"
-  title: "Example — Pricing"
-  viewport: "1440x900"
-annotation_count: 2
-annotations:
-  - id: 1
-    element: "button \"Download for macOS\""
-    url: "https://example.com/index.html?v=2#pricing"
-    location: ".hero > .wrap > .hero-actions > .btn-primary"
-    xpath: "/html/body/div[1]/section[2]/div/div[3]/button[1]"
-    css_classes: "btn-primary"
-    position: {x: 420, y: 380, width: 180, height: 48}
-    feedback: "Make the border-radius softer, more like 100px pill shape"
-    screenshot:
-      path: "/home/you/Downloads/annotate-html/example.com-20261020-153012/ann-01.jpg"
-      kb: 24
-  - id: 2
-    element: "h2 \"Built with Swift.\""
-    url: "https://example.com/index.html?v=2#pricing"
-    location: ".native-section > .wrap > .vis"
-    feedback: "Font weight feels too heavy here, try 600 instead of 700"
-
-images:
-  1: data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ...
-```
+`state.detailLevel` selects the field set — `compact`, `standard`, `detailed`
+(default) or `forensic` — but there is no UI switch for it; change the constant
+in `annotate.js` if you need a different level.
 
 ## Screenshots
 
-The Chrome extension screenshots the page the moment you press **Add** — full viewport, downscaled to 1280px wide, with the element outlined in red on the image — and writes a JPEG to:
+Pressing **Add** asks the extension's service worker to capture the visible tab,
+downscales it to 1280px wide, draws the element outline, and writes a JPEG to:
 
 ```
 ~/Downloads/annotate-html/<host>-<YYYYMMDD>-<HHMMSS>/ann-01.jpg
 ```
 
-One folder per page session, one file per annotation. The copied YAML carries the image itself as a `data:image/jpeg;base64,...` value in the bottom `images:` block — so a single paste into an agent is self-contained — while `screenshot.path` + `kb` up top let an agent use the saved file (or skip the pixels entirely) without decoding anything. The full viewport is kept so tiny elements still come with their surroundings. Screenshot capture pauses the tool's own overlays and pins first, so they never appear in the image, and a failed capture just drops the image keys — the annotation still records everything else.
+The tool's own toolbar, pins and hover highlight are hidden during capture, so
+they never appear in the image. If the capture fails the annotation is still
+recorded; the `screenshot:` and `images:` keys are simply absent.
 
-The `<script>` tag channel cannot take screenshots (a page can't capture itself without a dependency), so it skips this and its output has no `screenshot:` keys. The full URL, which needs no special access, is captured in both channels.
+## Persistence
 
+Annotations survive a reload, a crash and a browser restart. Two layers, both
+local — nothing leaves the machine:
 
-## License
+**1. Live state — `chrome.storage.local`.** Every annotation, the marker colour
+and the screenshot folder are saved per page (keyed on origin + pathname, so
+query strings and `#hash` on an SPA do not split one page across buckets). After
+a reload, reopen the toolbar with the icon or **Alt+Shift+A** and the pins come
+back with a `Restored N annotation(s)` toast. Restored annotations keep their
+ids, so new ones never collide. The store is capped at the 30 most recent pages
+or 14 days, whichever comes first; the `unlimitedStorage` permission is what
+lets the inline base64 JPEGs live there too.
 
-MIT
+**2. Readable copy — `annotations.yaml` on disk.** The same packet is written to
+the screenshot folder, overwritten in place:
 
-## Credits
+```
+~/Downloads/annotate-html/<host>-<YYYYMMDD>-<HHMMSS>/annotations.yaml
+```
 
-Element identification approach adapted from [Agentation](https://github.com/benjitaylor/agentation) (MIT). Built by [Asim Sayed](https://asimsayed.com).
+The write is debounced (2.5s after the last edit) and skipped when the content
+hash has not changed, so editing one comment rewrites one file instead of
+stacking copies. Leaving or backgrounding the tab flushes it immediately. This
+layer is what survives the browser entirely: `grep` the folder, hand the file to
+an agent, keep it in a work note.
+
+**The Download button.** The toolbar's download icon — or `D` — writes the packet
+on demand through the same path, so it lands beside the screenshots and
+overwrites in place instead of stacking copies. Copy (`C`) remains the
+clipboard route; Download is for when you want a file on disk right now.
+
+**One file, three channels.** The same `annotate.js` saves in every context it can
+run in: `chrome.storage.local` inside the extension, `GM_setValue` /
+`GM_getValue` inside a userscript manager, `localStorage` when it is loaded as a
+plain `<script>`. Downloads follow the same pattern — the service worker by
+default, `GM_download` under a manager, and an object URL on a temporary anchor in
+a plain page. The only genuinely extension-only capability is the screenshot,
+because nothing outside an extension can reach `captureVisibleTab`.
+
+### Drawing above the host application
+
+The toolbar, hover highlight and popup live in a root opened as a
+`popover="manual"`, which puts them in the browser's **top layer**. That beats
+application chrome a plain `z-index` cannot: fixed sidebars at
+`z-index: 2147483647`, rails trapped inside a transformed ancestor, drawers and
+`<dialog>` modals. The root is `pointer-events: none` so page clicks pass straight
+through, and each widget opts back in. Marker pins stay in document coordinates,
+so they remain page-absolute and scroll with the content.
+
+### Clearing
+
+- The trash icon in the edit popup removes **one** annotation; hover a pin and
+  click it to open.
+- The toolbar's trash icon clears **all** annotations for the page. That deletes
+  the stored record and removes `annotations.yaml` for the page. Screenshots are
+  left on disk, because a packet you already copied may point at them.
+
+Deleting files is deliberately narrow: the service worker removes a file only
+when its path matches
+`annotate-html/<host>-<YYYYMMDD>-<HHMMSS>/annotations.yaml` exactly, via
+`chrome.downloads.removeFile()`. It cannot touch anything else in `~/Downloads`,
+and it never deletes a directory.
+
+## Editing this tool
+
+`annotate.js` at the root of this folder is the source of truth.
+`extension/annotate.js` must stay byte-for-byte identical, because Chrome
+rejects manifest paths containing `..` and so needs a physical copy inside the
+bundle. After any edit:
+
+```bash
+cd extension && ./sync.sh
+node --check ../annotate.js
+diff -q ../annotate.js ./annotate.js && echo identical
+```
+
+`demo.html` is a small local page for testing annotations without a live
+target: open it with the extension enabled and click the toolbar icon.
+
+## Known limitations
+
+- **Screenshots need a visible tab.** `captureVisibleTab` fails on minimised or
+  background windows; the annotation still saves without the image.
+- **Restricted pages.** `chrome://*`, `chrome-extension://*`, the Web Store and
+  the built-in PDF viewer silently do nothing — check the service worker console
+  from `chrome://extensions`.
+- **Shadow DOM.** `document.elementFromPoint` returns the shadow host rather
+  than the shadow child.
+- **Iframes.** Only the top frame is instrumented (`allFrames: false`).
+- **Only on the tab you activated.** The `activeTab` grant dies when you
+  navigate that tab; click the icon again on the new page. That re-invocation is
+  also what restores saved annotations after a reload.
+- **Persistence is per browser profile.** The stored state lives in the browser
+  profile that owns the unpacked extension; a different profile starts empty.
+  The `annotations.yaml` sidecar is the portable copy.
+- **Markers ride in document coordinates.** Unlike the toolbar, highlight and
+  popup, pins are not in the top layer, so an app panel covering that exact spot
+  will cover the pin. The annotation is still recorded and appears in the packet.
+
+## License and credits
+
+MIT. See [LICENSE](LICENSE) and [FORK-NOTES.md](FORK-NOTES.md).
+
+- Original `annotate-html` by [Asim Sayed](https://asimsayed.com) —
+  [AsimSayed/annotate-html](https://github.com/AsimSayed/annotate-html). This
+  folder is Jethur's fork of that project.
+- Element-identification approach adapted from
+  [Agentation](https://github.com/benjitaylor/agentation) (MIT).

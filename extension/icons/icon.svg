@@ -1,3 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 155 157" width="128" height="128">
-  <path d="M58.8282 156.513L62.2248 103.934L18.2055 133.416L0 101.353L47.4158 78.2565L0 55.1599L18.2055 23.0965L62.2248 52.5786L58.8282 0H95.3751L91.8427 52.5786L135.862 23.0965L154.067 55.1599L106.787 78.2565L154.067 101.353L135.862 133.416L91.8427 103.934L95.3751 156.513H58.8282Z" fill="#C96442"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="tea-annotate: a teacup with a pencil">
+  <rect width="128" height="128" rx="28" fill="#191310"/>
+  <rect x="0.75" y="0.75" width="126.5" height="126.5" rx="27.25" fill="none" stroke="#F2EADB" stroke-opacity="0.14" stroke-width="1.5"/>
+
+  <!-- teacup -->
+  <path d="M29 58h56v20c0 14.4-12.1 26-27 26S29 92.4 29 78V58Z" fill="#F2EADB"/>
+  <path d="M87 64h5.5a11.5 11.5 0 0 1 0 23H87" fill="none" stroke="#F2EADB" stroke-width="7.5" stroke-linecap="round"/>
+  <!-- saucer -->
+  <rect x="22" y="105" width="70" height="8" rx="4" fill="#F2EADB" fill-opacity="0.72"/>
+
+  <!-- pencil, standing in the cup -->
+  <g transform="rotate(-20 58 54)">
+    <rect x="51" y="14" width="15" height="52" rx="3.5" fill="#D9A441"/>
+    <path d="M51 14 66 14 58.5 2Z" fill="#F2EADB"/>
+    <rect x="51" y="52" width="15" height="6" fill="#B98429"/>
+  </g>
 </svg>
