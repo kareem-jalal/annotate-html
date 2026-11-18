@@ -3,8 +3,8 @@
 //
 // Original project: annotate-html by Asim Sayed (MIT)
 //   https://github.com/AsimSayed/annotate-html
-// This is the Jethur fork: "Browser Tools/annotate-html" in jethur-utils.
-//   See FORK-NOTES.md beside this file for what differs.
+//   Maintained as a fork called tea-annotate; see FORK-NOTES.md beside this
+//   file for lineage and what differs.
 // Element identification adapted from Agentation (benjitaylor/agentation, MIT).
 //
 // No React. No build step. No dependencies.

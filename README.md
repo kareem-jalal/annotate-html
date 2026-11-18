@@ -13,7 +13,7 @@ annotate three elements, paste the packet into your agent.
 
 ## Install (load unpacked)
 
-1. Clone this repository and find `Browser Tools/annotate-html/extension/`.
+1. Clone this repository. The loadable extension is the `extension/` folder.
 2. Open `chrome://extensions` and toggle **Developer mode** (top right).
 3. **Load unpacked** → select the `extension/` folder.
 4. Pin **tea-annotate** to the toolbar.
@@ -199,7 +199,7 @@ rejects manifest paths containing `..` and so needs a physical copy inside the
 bundle. After any edit:
 
 ```bash
-cd "Browser Tools/annotate-html/extension" && ./sync.sh
+cd extension && ./sync.sh
 node --check ../annotate.js
 diff -q ../annotate.js ./annotate.js && echo identical
 ```
@@ -233,6 +233,6 @@ MIT. See [LICENSE](LICENSE) and [FORK-NOTES.md](FORK-NOTES.md).
 
 - Original `annotate-html` by [Asim Sayed](https://asimsayed.com) —
   [AsimSayed/annotate-html](https://github.com/AsimSayed/annotate-html). This
-  folder is Jethur's fork of that project.
+  repository is a fork of that project.
 - Element-identification approach adapted from
   [Agentation](https://github.com/benjitaylor/agentation) (MIT).
