@@ -41,7 +41,7 @@
     markersHidden: false,
     toolbarHidden: false,
     rulerDragging: false,
-    markerColor: "#D9A441",
+    markerColor: "#C4573C",
     shotDir: null,
   };
 
